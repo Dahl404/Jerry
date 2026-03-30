@@ -1,4 +1,4 @@
-# Jerry Alpha 0.0.3 - Git Ignore
+# Jerry - Git Ignore
 
 # Python cache
 __pycache__/
@@ -36,20 +36,19 @@ ENV/
 *~
 .DS_Store
 
-# Logs and runtime data
+# Workspace - keep structure, ignore contents
+jerry_workspace/**/*
+!jerry_workspace/.gitkeep
+!jerry_workspace/diary/.gitkeep
+!jerry_workspace/summaries/.gitkeep
+!jerry_workspace/persona/.gitkeep
+!jerry_workspace/logs/.gitkeep
+!jerry_workspace/scratchpad/.gitkeep
+
+# Application logs
 logs/
 *.log
-jerry_workspace/logs/
-jerry_workspace/diary/
-jerry_workspace/summaries/
-jerry_workspace/persona/
-jerry_workspace/scratchpad/
-jerry_workspace/.session_state
-jerry_workspace/.last_run
-
-# Model files (too large for git)
-jerry_workspace/models/*.gguf
-*.gguf
+!logs/.gitkeep
 
 # Session state
 .state/
@@ -73,3 +72,6 @@ docs/_build/
 # Distribution
 *.tar.gz
 *.zip
+
+# Model files (too large for git)
+*.gguf
