@@ -1,6 +1,6 @@
-# 🐭 Jerry — Autonomous Qwen3.5 Agent (Alpha)
+# Jerry — Autonomous Qwen3.5 Agent (Alpha 0.0.2)
 
-> **⚠️ Alpha Release** — This is a **minimal proof-of-concept (POC)**. Jerry is mobile-first, aesthetic-focused, and built for fast local inference on Termux/Android. Expect bugs and rapid iteration.
+> **⚠️ Alpha Release** — This is a **minimal proof-of-concept (POC)**. Mobile-first, aesthetic-focused TUI agent built for fast local inference on Termux/Android.
 
 ---
 
@@ -276,9 +276,8 @@ Jerry's tool catalog (call `help()` for full usage):
 
 ---
 
-## Known Issues (Alpha)
+## Known Issues (Alpha 0.0.2)
 
-- **Display flickering** — Fixed with optimized rendering (v0.0.3)
 - **Tool errors** — Some tools may fail silently or return unexpected results
 - **Emotion lag** — Face may not update instantly on slow devices
 - **tmux issues** — Streaming can be unstable, especially on low-RAM devices
@@ -314,7 +313,6 @@ Jerry's tool catalog (call `help()` for full usage):
 - **BUG-A**: Worker context lost on file reload (design limitation)
 - **BUG-B**: Emotion parsing can miss tags in long streaming responses
 - **BUG-C**: Duplicate task prompts when task #0 completes (partially fixed)
-- **BUG-D**: Screen flicker during rapid updates (improved in v0.0.3)
 
 ---
 
