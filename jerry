@@ -1,0 +1,10 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Jerry Launcher Script
+# Automatically starts tmux and runs Jerry inside it
+# Can be placed anywhere - uses script's own directory location
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$SCRIPT_DIR"
+python3 jerry.py
