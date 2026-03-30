@@ -330,19 +330,22 @@ class TUI:
 
     def setup(self, stdscr):
         self.stdscr = stdscr
-        curses.curs_set(1)
+        curses.curs_set(1)  # Show cursor
         curses.start_color()
         curses.use_default_colors()
         
+        # Basic curses setup
+        curses.noecho()
+        stdscr.keypad(True)
+
         # Auto-detect theme on first run
         if self._theme_auto:
             self.theme = self._detect_background_brightness()
-        
+
         # Initialize colors with detected/current theme
         self._init_colors()
 
         stdscr.nodelay(True)
-        stdscr.keypad(True)
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -397,63 +400,251 @@ class TUI:
     # ── Full redraw ───────────────────────────────────────────────────────────
 
     def render(self):
-        # ALWAYS draw something to prove render is called
+        """Render the screen."""
         try:
             H, W = self.stdscr.getmaxyx()
-            self.stdscr.erase()
-            
-            # Draw simple test pattern
-            self.stdscr.addstr(0, 0, f"RENDER CALLED: {W}x{H}".ljust(W)[:W])
-            self.stdscr.addstr(2, 0, f"Face: {self.face_enabled}, Stream: {self.state.is_stream_mode()}".ljust(W)[:W])
-            self.stdscr.refresh()
-            
-        except Exception as e:
-            # If even basic drawing fails, stdscr might be corrupted
-            try:
-                curses.endwin()
-            except:
-                pass
-            print(f"Render failed: {e}")
-            return
-
+        except curses.error:
+            return  # Terminal not ready
+        
         # Minimum size check
         if self.face_enabled:
-            # Face needs 100x60
             if H < 60 or W < 100:
-                # Show minimum size warning
-                try:
-                    self.stdscr.addstr(4, 0, f"Terminal too small! Need 100x60, have {W}x{H}".center(W)[:W])
-                    self.stdscr.addstr(6, 0, "Please resize your terminal window.".center(W)[:W])
-                    self.stdscr.addstr(8, 0, f"Or use: /face hide".center(W)[:W])
-                    self.stdscr.refresh()
-                except curses.error:
-                    pass
+                self._draw_min_size_warning(H, W, "100x60")
                 return
         else:
-            # Without face, minimum is 80x24
             if H < 24 or W < 80:
-                try:
-                    self.stdscr.addstr(4, 0, f"Terminal too small! Need 80x24, have {W}x{H}".center(W)[:W])
-                    self.stdscr.addstr(6, 0, "Please resize your terminal window.".center(W)[:W])
-                    self.stdscr.refresh()
-                except curses.error:
-                    pass
+                self._draw_min_size_warning(H, W, "80x24")
                 return
-
-        # Check state for stream mode
+        
+        # Clear screen and draw
+        self.stdscr.erase()
+        
         if self.state.is_stream_mode():
-            # Stream mode: show captured terminal screen
             self._draw_stream_screen(H, W)
         else:
-            # Normal mode: show face panel + conversation feed
             self._draw_normal_mode(H, W)
-
+        
+        # Refresh screen
         self.stdscr.refresh()
+        
         self.frame += 1
-
-        # Parse emotion tags from new messages every frame for live updates
+        
+        # Parse emotion tags from new messages for live updates
         if self.face_enabled:
             self._parse_recent_emotions()
+    
+    def _draw_min_size_warning(self, H: int, W: int, required: str):
+        """Draw minimum terminal size warning."""
+        try:
+            self.stdscr.erase()
+            self.stdscr.addstr(4, 0, f"Terminal too small! Need {required}, have {W}x{H}".center(W)[:W])
+            self.stdscr.addstr(6, 0, "Please resize your terminal window.".center(W)[:W])
+            self.stdscr.addstr(8, 0, f"Or use: /face hide".center(W)[:W])
+            self.stdscr.refresh()
+        except curses.error:
+            pass
+    
+    def _check_state_changed(self, snapshot) -> bool:
+        """Check if state has changed since last render."""
+        if self._last_state_snapshot is None:
+            return True
+        
+        log, chat, todos, status, wfile, expression = snapshot
+        prev_log, prev_chat, prev_todos, prev_status, prev_wfile, prev_expr = self._last_state_snapshot
+        
+        # Check for changes
+        if len(chat) != len(prev_chat):
+            return True
+        if len(log) != len(prev_log):
+            return True
+        if status != prev_status:
+            return True
+        if len(todos) != len(prev_todos):
+            return True
+        if wfile != prev_wfile:
+            return True
+        
+        # Check last few chat messages for streaming changes
+        if chat and prev_chat:
+            last_msg = chat[-1].text if chat else ""
+            prev_last_msg = prev_chat[-1].text if prev_chat else ""
+            if last_msg != prev_last_msg:
+                return True
+        
+        return False
+    
+    def _check_face_changed(self, snapshot) -> bool:
+        """Check if face panel needs redrawing."""
+        if not self.face_enabled:
+            return False
+        
+        current_emotion = self.face_display.current_emotion
+        if current_emotion != self._face_last_emotion:
+            self._face_last_emotion = current_emotion
+            self._face_dirty = True
+            return True
+        
+        return self._face_dirty
+    
+    def _check_feed_changed(self, snapshot) -> bool:
+        """Check if feed panel needs redrawing."""
+        log, chat, todos, status, wfile, expression = snapshot
+        
+        if self._last_state_snapshot is None:
+            self._feed_dirty = True
+            return True
+        
+        prev_log, prev_chat, prev_todos, prev_status, prev_wfile, prev_expr = self._last_state_snapshot
+        
+        # Check for new messages or log entries
+        if len(chat) != len(prev_chat):
+            self._feed_dirty = True
+            return True
+        if len(log) != len(prev_log):
+            self._feed_dirty = True
+            return True
+        if len(todos) != len(prev_todos):
+            self._feed_dirty = True
+            return True
+        
+        # Check for streaming message updates
+        if chat and prev_chat:
+            last_msg = chat[-1].text if chat else ""
+            prev_last_msg = prev_chat[-1].text if prev_chat else ""
+            if last_msg != prev_last_msg:
+                self._feed_dirty = True
+                return True
+        
+        return self._feed_dirty
+    
+    def _check_status_changed(self, snapshot) -> bool:
+        """Check if status bar needs redrawing."""
+        log, chat, todos, status, wfile, expression = snapshot
+        
+        if self._last_state_snapshot is None:
+            self._status_dirty = True
+            return True
+        
+        prev_log, prev_chat, prev_todos, prev_status, prev_wfile, prev_expr = self._last_state_snapshot
+        
+        # Status changes frequently (spinner animation), so always mark as dirty
+        # But we'll optimize the drawing to only update changed parts
+        self._status_dirty = True
+        return True
+    
+    def _snapshot_for_comparison(self, snapshot):
+        """Create a snapshot for state comparison."""
+        log, chat, todos, status, wfile, expression = snapshot
+        # Return copies to avoid reference issues
+        return (log[:], chat[:], todos[:], status, wfile, expression)
+    
+    def _draw_normal_mode_to_window(self, win, H: int, W: int, snapshot, face_changed: bool, feed_changed: bool, status_changed: bool):
+        """Draw normal mode to specified window with selective redrawing.
+        
+        Args:
+            win: Window to draw to (can be off-screen buffer)
+            H, W: Screen dimensions
+            snapshot: State snapshot (log, chat, todos, status, wfile, expression)
+            face_changed: Whether face panel needs redrawing
+            feed_changed: Whether feed panel needs redrawing
+            status_changed: Whether status bar needs redrawing
+        """
+        log, chat, todos, status, wfile, expression = snapshot
+        _, _, face_h, face_w, todo_w, chat_h, chat_w, status_y, input_y = self._layout()
+        
+        self._advance_think_anim(status)
+        
+        if self.face_enabled:
+            # Draw face panel only if changed (optimization)
+            if face_changed:
+                self._draw_face_panel_to_window(win, y=0, x=0, h=face_h, w=face_w)
+                self._face_dirty = False  # Reset dirty flag after drawing
+            
+            # Draw todo sidebar beside face
+            if todos and todo_w > 0:
+                todo_x = face_w
+                self._draw_todo_vertical_to_window(win, todos, y=0, x=todo_x, h=face_h, w=todo_w)
+            
+            # Draw chat feed below face
+            chat_y = face_h
+            chat_visible_rows = chat_h - 2
+            
+            if chat_visible_rows >= self.chat_threshold:
+                self._draw_feed_to_window(win, log, chat, y=chat_y, x=0, h=chat_h, w=chat_w)
+            else:
+                self._draw_chat_feed_to_window(win, log, chat, y=chat_y, x=0, h=chat_h, w=chat_w)
+        else:
+            # Face disabled - draw full feed
+            feed_y = 0
+            feed_h = H - 4
+            feed_w = W
+            
+            if todos and todo_w > 0:
+                feed_w = W - todo_w
+                todo_x = W - todo_w
+                self._draw_todo_to_window(win, todos, y=feed_y, x=todo_x, h=feed_h, w=todo_w)
+            
+            self._draw_feed_to_window(win, log, chat, y=feed_y, x=0, h=feed_h, w=feed_w)
+        
+        # Draw status bar and input (always redraw for animations)
+        self._draw_status_bar_to_window(win, status_y, W, status, wfile, expression)
+        self._draw_input_to_window(win, y=input_y, x=0, h=3, w=W)
+    
+    def _draw_stream_screen_to_window(self, win, H: int, W: int, snapshot):
+        """Draw stream mode to specified window.
+        
+        Args:
+            win: Window to draw to (can be off-screen buffer)
+            H, W: Screen dimensions
+            snapshot: State snapshot
+        """
+        log, chat, todos, status, wfile, expression = snapshot
+        target_session = self.state.get_stream_session() or "unknown"
+        
+        header_row = 0
+        status_row = H - 4
+        input_start = H - 3
+        min_chat_h = 5
+        screen_end = H - input_start - min_chat_h
+        
+        # Draw header
+        header = f" 📺 Streaming: {target_session}  |  Press 'q' to exit  |  {datetime.now().strftime('%H:%M:%S')} "
+        try:
+            win.addstr(header_row, 0, header.center(W)[:W], curses.color_pair(1) | curses.A_BOLD)
+        except curses.error:
+            pass
+        
+        # Draw captured screen
+        if _current_screen and len(_current_screen) > 50 and not _current_screen.startswith("ERROR"):
+            clean_screen = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', _current_screen)
+            lines = clean_screen.split('\n')
+            for i, line in enumerate(lines[:screen_end]):
+                try:
+                    win.addstr(i + 1, 0, line[:W].ljust(W), curses.color_pair(5))
+                except curses.error:
+                    pass
+        else:
+            try:
+                mid_row = screen_end // 2
+                win.addstr(mid_row, 0, "⏳ Waiting for terminal screen...".center(W)[:W], curses.color_pair(6))
+                win.addstr(mid_row + 2, 0, f"Target session: {target_session}".center(W)[:W], curses.color_pair(6))
+                win.addstr(mid_row + 4, 0, "Make sure tmux session exists and has content".center(W)[:W], curses.color_pair(6))
+            except curses.error:
+                pass
+        
+        # Draw chat feed
+        chat_y = screen_end + 1
+        chat_h = input_start - chat_y
+        if chat_h >= 5:
+            chat_visible_rows = chat_h - 2
+            if chat_visible_rows >= self.chat_threshold:
+                self._draw_feed_to_window(win, log, chat, y=chat_y, x=0, h=chat_h, w=W)
+            else:
+                self._draw_chat_feed_to_window(win, log, chat, y=chat_y, x=0, h=chat_h, w=W)
+        
+        # Draw status bar and input
+        self._draw_status_bar_to_window(win, status_row, W, status, wfile, expression)
+        self._draw_input_to_window(win, y=input_start, x=0, h=3, w=W)
 
     def _parse_recent_emotions(self):
         """Parse emotion tags from NEW chat messages and update face display.
@@ -1279,6 +1470,312 @@ class TUI:
             self.stdscr.addstr(y+1, x+1+len(prompt), disp,
                                curses.color_pair(_C["inp_txt"]))
             self.stdscr.move(y+1, x+1+len(prompt)+len(disp))
+        except curses.error:
+            pass
+
+    # ── Window-based drawing methods (for double-buffering) ─────────────────
+
+    def _draw_face_panel_to_window(self, win, y: int, x: int, h: int, w: int):
+        """Draw the ASCII face panel to specified window.
+        
+        Args:
+            win: Window to draw to (can be off-screen buffer)
+            y: Starting row
+            x: Starting column
+            h: Height (50 rows)
+            w: Width (100 chars)
+        """
+        try:
+            face_lines = self.face_display.get_current_face()
+            battr = curses.color_pair(_C["border"]) | curses.A_DIM
+            emotion = self.face_display.current_emotion.capitalize()
+
+            # Top border with emotion label
+            top_border = "╭" + "─" * (w - 2) + "╮"
+            win.addstr(y, x, top_border[:w], battr)
+            label = f"◦ {emotion} "
+            win.addstr(y, x + 2, label, battr | curses.A_BOLD)
+
+            # Face lines
+            for i, line in enumerate(face_lines[:h-2]):
+                win.addstr(y + i + 1, x, "│", battr)
+                win.addstr(y + i + 1, x + w - 1, "│", battr)
+                win.addstr(y + i + 1, x + 1, line[:w-2], curses.color_pair(_C["jerry_txt"]))
+
+            # Bottom border
+            bottom_border = "╰" + "─" * (w - 2) + "╯"
+            win.addstr(y + h - 1, x, bottom_border[:w], battr)
+        except curses.error:
+            pass
+
+    def _draw_todo_vertical_to_window(self, win, todos: List[Todo], y: int, x: int, h: int, w: int):
+        """Draw todo panel to specified window.
+        
+        Args:
+            win: Window to draw to
+            todos: List of todo items
+            y, x: Position
+            h, w: Dimensions
+        """
+        try:
+            battr = curses.color_pair(_C["border"]) | curses.A_DIM
+            title = "plan"
+            pad = max(0, w - len(title) - 5)
+
+            win.addstr(y, x, f"╭─ {title} {'─'*pad}╮"[:w], battr)
+
+            for r in range(y + 1, y + h - 1):
+                win.addstr(r, x, "│", battr)
+                win.addstr(r, x + w - 1, "│", battr)
+
+            win.addstr(y + h - 1, x, ("╰" + "─"*(w-2) + "╯")[:w], battr)
+
+            _PRI = {
+                "high":   (_C["th"], "●", curses.A_BOLD),
+                "medium": (_C["tm"], "◐", 0),
+                "low":    (_C["tl"], "○", curses.A_DIM),
+            }
+
+            iw = max(1, w - 3)
+            row = y + 1
+
+            for t in todos:
+                if row >= y + h - 1:
+                    break
+                if t.done:
+                    cp, glyph, xa = _C["td"], "✓", curses.A_DIM
+                else:
+                    cp, glyph, xa = _PRI.get(t.priority, (_C["tm"], "◐", 0))
+
+                text = f" {glyph} {t.text}"
+                if len(text) > iw:
+                    text = text[:iw-1] + "…"
+
+                win.addstr(row, x + 1, text.ljust(iw)[:iw], curses.color_pair(cp) | xa)
+                row += 1
+        except curses.error:
+            pass
+
+    def _draw_feed_to_window(self, win, log: List[LogEntry], chat: List[ChatMsg],
+                              y: int, x: int, h: int, w: int):
+        """Draw full feed to specified window.
+        
+        Args:
+            win: Window to draw to
+            log, chat: Log and chat entries
+            y, x: Position
+            h, w: Dimensions
+        """
+        try:
+            battr = curses.color_pair(_C["border"]) | curses.A_DIM
+
+            # Top border
+            win.addstr(y, x, "╭" + "─" * (w - 2) + "╮", battr)
+            for r in range(y + 1, y + h - 1):
+                win.addstr(r, x, "│", battr)
+                win.addstr(r, x + w - 1, "│", battr)
+            win.addstr(y + h - 1, x, "╰" + "─" * (w - 2) + "╯", battr)
+
+            # Build feed lines
+            lines = self._build_feed_lines(log, chat, w - 3)
+
+            # Draw visible lines
+            ih = h - 2
+            total = len(lines)
+            self.log_scroll = min(self.log_scroll, max(0, total - ih))
+            start = max(0, total - ih - self.log_scroll)
+
+            for i in range(ih):
+                line_idx = start + i
+                if line_idx >= total:
+                    break
+                cp, text, xattr = lines[line_idx]
+                win.addstr(y + 1 + i, x + 1, text[:w-2].ljust(w-2)[:w-2],
+                          curses.color_pair(cp) | xattr)
+        except curses.error:
+            pass
+
+    def _draw_chat_feed_to_window(self, win, log: List[LogEntry], chat: List[ChatMsg],
+                                   y: int, x: int, h: int, w: int):
+        """Draw compact chat feed to specified window.
+        
+        Args:
+            win: Window to draw to
+            log, chat: Log and chat entries
+            y, x: Position
+            h, w: Dimensions
+        """
+        try:
+            battr = curses.color_pair(_C["border"]) | curses.A_DIM
+
+            # Top border
+            win.addstr(y, x, "╭" + "─" * (w - 2) + "╮", battr)
+            for r in range(y + 1, y + h - 1):
+                win.addstr(r, x, "│", battr)
+                win.addstr(r, x + w - 1, "│", battr)
+            win.addstr(y + h - 1, x, "╰" + "─" * (w - 2) + "╯", battr)
+
+            # Build chat lines
+            all_lines = []
+            iw = max(1, w - 4)
+            ih = h - 2
+
+            for msg in chat:
+                if not msg.text:
+                    continue
+                text = msg.text.replace('\n', ' ')
+                role_label = "you: " if msg.role == "user" else "jerry: "
+                wrapped = textwrap.wrap(text, width=iw - len(role_label)) or [""]
+
+                for i, chunk in enumerate(wrapped):
+                    if i == 0:
+                        all_lines.append((msg.role, role_label + chunk, True))
+                    else:
+                        all_lines.append((msg.role, "     " + chunk, False))
+
+            # Draw visible lines
+            total = len(all_lines)
+            self.chat_scroll = min(self.chat_scroll, max(0, total - ih))
+            start = max(0, total - ih - self.chat_scroll)
+
+            for i in range(ih):
+                line_idx = start + i
+                if line_idx >= total:
+                    break
+
+                role, text, is_first_line = all_lines[line_idx]
+                cp = _C["user_txt"] if role == "user" else _C["jerry_txt"]
+                lbl = _C["user_lbl"] if role == "user" else _C["jerry_lbl"]
+
+                if is_first_line:
+                    if role == "user":
+                        win.addstr(y + 1 + i, x + 2, "you: ",
+                                   curses.color_pair(lbl) | curses.A_BOLD)
+                        win.addstr(y + 1 + i, x + 7, text[5:][:iw-7],
+                                   curses.color_pair(cp))
+                    else:
+                        win.addstr(y + 1 + i, x + 2, "jerry: ",
+                                   curses.color_pair(lbl) | curses.A_BOLD)
+                        win.addstr(y + 1 + i, x + 9, text[7:][:iw-9],
+                                   curses.color_pair(cp))
+                else:
+                    win.addstr(y + 1 + i, x + 2, text[:iw-2],
+                               curses.color_pair(cp))
+        except curses.error:
+            pass
+
+    def _draw_todo_to_window(self, win, todos: List[Todo], y: int, x: int, h: int, w: int):
+        """Draw todo panel to specified window.
+        
+        Args:
+            win: Window to draw to
+            todos: List of todo items
+            y, x: Position
+            h, w: Dimensions
+        """
+        try:
+            battr = curses.color_pair(_C["border"]) | curses.A_DIM
+
+            # Borders
+            win.addstr(y, x, "╭" + "─" * (w - 2) + "╮", battr)
+            for r in range(y + 1, y + h - 1):
+                win.addstr(r, x, "│", battr)
+                win.addstr(r, x + w - 1, "│", battr)
+            win.addstr(y + h - 1, x, "╰" + "─" * (w - 2) + "╯", battr)
+
+            # Title
+            title = " plan "
+            win.addstr(y, x + (w // 2 - len(title) // 2), title, battr | curses.A_BOLD)
+
+            # Todo items
+            _PRI = {
+                "high":   (_C["th"], "●", curses.A_BOLD),
+                "medium": (_C["tm"], "◐", 0),
+                "low":    (_C["tl"], "○", curses.A_DIM),
+            }
+
+            iw = max(1, w - 3)
+            row = y + 1
+
+            for t in todos:
+                if row >= y + h - 1:
+                    break
+                if t.done:
+                    cp, glyph, xa = _C["td"], "✓", curses.A_DIM
+                else:
+                    cp, glyph, xa = _PRI.get(t.priority, (_C["tm"], "◐", 0))
+
+                text = f" {glyph} {t.text}"
+                if len(text) > iw:
+                    text = text[:iw-1] + "…"
+
+                win.addstr(row, x + 1, text.ljust(iw)[:iw], curses.color_pair(cp) | xa)
+                row += 1
+        except curses.error:
+            pass
+
+    def _draw_status_bar_to_window(self, win, y: int, W: int, status: str,
+                                    wfile: Optional[str], expression: str):
+        """Draw status bar to specified window.
+        
+        Args:
+            win: Window to draw to
+            y: Row position
+            W: Screen width
+            status, wfile, expression: Status info
+        """
+        try:
+            # Status line
+            spin = _SPINNERS.get(status, "○")
+            if isinstance(spin, str) and len(spin) > 1:
+                # Animated spinner
+                spin = spin[self.frame % len(spin)]
+
+            slug = status.split()[0].lower() if status else "idle"
+            bar = self._loading_bar(12, slug)
+
+            left = f" {spin} {status} " if status else " ○ idle "
+            right = f"│ {wfile or 'no file'} │ {expression or 'neutral'} "
+
+            avail = W - len(left) - len(right) - 6
+            bar_str = bar[:avail] if avail > 0 else ""
+
+            status_line = f"{left}{bar_str}  {right}"
+            win.addstr(y, 0, status_line[:W].ljust(W)[:W],
+                      curses.color_pair(_C["stat_lo"]))
+        except curses.error:
+            pass
+
+    def _draw_input_to_window(self, win, y: int, x: int, h: int, w: int):
+        """Draw input bar to specified window.
+        
+        Args:
+            win: Window to draw to
+            y, x: Position
+            h, w: Dimensions
+        """
+        try:
+            hint = ("/log  /chat  /todo  /clear  /inject  /quit  /help"
+                    if self.input_buf.startswith("/")
+                    else "↑↓ scroll   /help for commands")
+
+            battr = curses.color_pair(_C["border"]) | curses.A_BOLD
+            hpad = max(0, w - len(hint) - 5)
+            win.addstr(y, x, f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
+            win.addstr(y + h - 1, x, ("╰" + "─"*(w-2) + "╯")[:w], battr)
+            for r in range(y + 1, y + h - 1):
+                win.addstr(r, x, "│", battr)
+                win.addstr(r, x + w - 1, "│", battr)
+
+            prompt = " ›  "
+            avail = max(1, w - len(prompt) - 3)
+            disp = (self.input_buf[-avail:]
+                    if len(self.input_buf) > avail else self.input_buf)
+            win.addstr(y + 1, x + 1, prompt,
+                      curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
+            win.addstr(y + 1, x + 1 + len(prompt), disp,
+                      curses.color_pair(_C["inp_txt"]))
+            win.move(y + 1, x + 1 + len(prompt) + len(disp))
         except curses.error:
             pass
 

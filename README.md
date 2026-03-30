@@ -58,10 +58,31 @@ cd Jerry
 ### Model Setup
 
 Jerry expects local AI model API endpoints:
-- **Agent Model**: `http://localhost:8080/v1/chat/completions` (main chat)
-- **Worker Model**: `http://localhost:8081/v1/chat/completions` (file analysis)
+- **Default**: Both Agent and Worker use `http://localhost:8080/v1/chat/completions`
+- **Separate Ports**: Agent on `8080`, Worker on `8081` (optional)
 
-Configure in `jerry_core/config.py` if using different ports/URLs.
+**Configuration Options:**
+
+1. **Same Port (Default)**:
+   ```bash
+   # Both agent and worker use port 8080
+   export JERRY_AGENT_PORT=8080
+   export JERRY_WORKER_PORT=8080  # Or omit, defaults to agent port
+   ```
+
+2. **Separate Ports**:
+   ```bash
+   export JERRY_AGENT_PORT=8080
+   export JERRY_WORKER_PORT=8081
+   ```
+
+3. **Custom Ports**:
+   ```bash
+   export JERRY_AGENT_PORT=11434  # e.g., Ollama default
+   export JERRY_WORKER_PORT=11434
+   ```
+
+Configure in `jerry_core/config.py` if not using environment variables.
 
 **Recommended Models:**
 - Qwen3.5 (via llama.cpp, Ollama, or vLLM)
@@ -186,9 +207,17 @@ Jerry/
 Edit `jerry_core/config.py` to customize:
 
 ```python
-# API Endpoints
-AGENT_URL  = "http://localhost:8080/v1/chat/completions"
-WORKER_URL = "http://localhost:8081/v1/chat/completions"
+# API Endpoints (can also use environment variables)
+# Default: Both use port 8080
+AGENT_PORT   = 8080
+WORKER_PORT  = 8080  # Same as agent by default
+
+# Or use environment variables:
+# export JERRY_AGENT_PORT=8080
+# export JERRY_WORKER_PORT=8081
+
+AGENT_URL    = f"http://localhost:{AGENT_PORT}/v1/chat/completions"
+WORKER_URL   = f"http://localhost:{WORKER_PORT}/v1/chat/completions"
 
 # Model Parameters
 MAX_TOKENS  = 15000
@@ -249,14 +278,43 @@ Jerry's tool catalog (call `help()` for full usage):
 
 ## Known Issues (Alpha)
 
-- **Display flickering** — Working on smoother rendering
+- **Display flickering** — Fixed with optimized rendering (v0.0.3)
 - **Tool errors** — Some tools may fail silently or return unexpected results
 - **Emotion lag** — Face may not update instantly on slow devices
 - **tmux issues** — Streaming can be unstable, especially on low-RAM devices
 - **Memory growth** — Long sessions may consume RAM over time
 - **Path validation** — Some edge cases in relative path resolution
+- **Same-port worker** — If using same port for agent+worker, ensure model supports both chat and text-processing tasks
 
 **Workaround:** Restart Jerry (`/quit`) if issues occur. Check `logs/jerry_stdout.log` for errors.
+
+---
+
+## Active TODOs & Bugs
+
+### High Priority
+- [ ] **Worker context persistence** — Worker resets on every file load, losing previous context
+- [ ] **Tool call error handling** — Better error messages and retry logic
+- [ ] **Screen capture reliability** — Improve tmux capture for curses-based terminals
+- [ ] **Memory leaks** — Long-running sessions accumulate state
+
+### Medium Priority
+- [ ] **Emotion transition smoothing** — Add fade effects between face changes
+- [ ] **Chat scroll persistence** — Remember scroll position across renders
+- [ ] **Input validation** — Better handling of malformed tool calls
+- [ ] **Worker compression** — Test and optimize conversation compression
+
+### Low Priority / Future
+- [ ] **Custom face creation** — Allow users to design custom emotion faces
+- [ ] **Theme customization** — User-defined color schemes
+- [ ] **Plugin system** — Extensible tool architecture
+- [ ] **Multi-session support** — Run multiple Jerry instances
+
+### Known Bugs (Tracked)
+- **BUG-A**: Worker context lost on file reload (design limitation)
+- **BUG-B**: Emotion parsing can miss tags in long streaming responses
+- **BUG-C**: Duplicate task prompts when task #0 completes (partially fixed)
+- **BUG-D**: Screen flicker during rapid updates (improved in v0.0.3)
 
 ---
 

@@ -17,8 +17,13 @@ SUMMARY_DIR    = os.path.join(JERRY_BASE, "summaries")
 PERSONA_DIR    = os.path.join(JERRY_BASE, "persona")
 
 # ─── API Endpoints ─────────────────────────────────────────────────────────────
-AGENT_URL    = "http://localhost:8080/v1/chat/completions"
-WORKER_URL   = "http://localhost:8081/v1/chat/completions"
+# Default: Both agent and worker use the same port (8080)
+# To use separate ports, change WORKER_PORT to 8081
+AGENT_PORT   = int(os.environ.get("JERRY_AGENT_PORT", "8080"))
+WORKER_PORT  = int(os.environ.get("JERRY_WORKER_PORT", str(AGENT_PORT)))  # Same as agent by default
+
+AGENT_URL    = f"http://localhost:{AGENT_PORT}/v1/chat/completions"
+WORKER_URL   = f"http://localhost:{WORKER_PORT}/v1/chat/completions"
 
 # ─── Model Parameters ──────────────────────────────────────────────────────────
 MAX_TOKENS   = 15000

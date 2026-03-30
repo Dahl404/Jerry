@@ -300,8 +300,8 @@ class Agent:
     # ── API call with streaming ────────────────────────────────────────────────
     def _call_model_streaming(self) -> Dict:
         """Call the model with streaming support for real-time output.
-        
-        Uses a 120 second timeout to prevent permanent hangs.
+
+        Uses a background thread to prevent UI blocking during slow token generation.
         """
         try:
             # Always inject cwd so the model knows its filesystem position.
@@ -353,12 +353,21 @@ class Agent:
             accumulated = {"role": "assistant", "content": "", "tool_calls": []}
             thinking_content = ""  # Accumulate thinking separately
             response_content = ""  # Accumulate response separately
+            chunks_received = 0
+            first_token_received = False
 
-            # Set status to streaming when we start receiving data
-            self.state.set_status("streaming")
+            # Set status to processing (waiting for first token)
+            self.state.set_status("processing")
 
-            for line in r.iter_lines():
+            for line in r.iter_lines(chunk_size=1):
+                # Check for user interruption during streaming
+                with self.state._lock:
+                    if len(self.state.inbox) > 0:
+                        self.state.push_log("info", "Stream interrupted by user message")
+                        break
+
                 if line:
+                    chunks_received += 1
                     line_str = line.decode('utf-8')
                     if line_str.startswith('data: '):
                         data_str = line_str[6:]
@@ -370,6 +379,10 @@ class Agent:
 
                             # Handle thinking/reasoning tokens (Qwen3.5 enable_thinking)
                             if delta.get('reasoning_content'):
+                                # First token - switch from processing to streaming
+                                if not first_token_received:
+                                    first_token_received = True
+                                    self.state.set_status("streaming")
                                 thinking_chunk = delta['reasoning_content']
                                 thinking_content += thinking_chunk
                                 # Stream thinking to chat in thinking color
@@ -384,6 +397,10 @@ class Agent:
 
                             # Handle normal response content
                             if delta.get('content'):
+                                # First token - switch from processing to streaming
+                                if not first_token_received:
+                                    first_token_received = True
+                                    self.state.set_status("streaming")
                                 chunk = delta['content']
                                 response_content += chunk
                                 accumulated['content'] += chunk
@@ -411,6 +428,10 @@ class Agent:
 
                             # Accumulate tool calls
                             if delta.get('tool_calls'):
+                                # First token - switch from processing to streaming
+                                if not first_token_received:
+                                    first_token_received = True
+                                    self.state.set_status("streaming")
                                 for tc in delta['tool_calls']:
                                     idx = tc.get('index', 0)
                                     if len(accumulated['tool_calls']) <= idx:
@@ -429,6 +450,12 @@ class Agent:
                         except json.JSONDecodeError as e:
                             self.state.push_log("error", f"Stream JSON decode error: {e}")
                             continue
+
+            # Log if no chunks received (model may have failed silently)
+            if chunks_received == 0:
+                self.state.push_log("warning", "Stream ended with 0 chunks - model may have failed")
+                # Return empty response - caller will handle as text response
+                return {"role": "assistant", "content": "[No response generated - model may have failed]"}
 
             # Combine thinking and response for conversation history (without markers)
             accumulated['content'] = thinking_content + response_content

@@ -1,0 +1,75 @@
+# Jerry Alpha 0.0.3 - Git Ignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and runtime data
+logs/
+*.log
+jerry_workspace/logs/
+jerry_workspace/diary/
+jerry_workspace/summaries/
+jerry_workspace/persona/
+jerry_workspace/scratchpad/
+jerry_workspace/.session_state
+jerry_workspace/.last_run
+
+# Model files (too large for git)
+jerry_workspace/models/*.gguf
+*.gguf
+
+# Session state
+.state/
+*.state
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Documentation builds
+docs/_build/
+
+# Distribution
+*.tar.gz
+*.zip
