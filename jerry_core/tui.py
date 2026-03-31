@@ -824,6 +824,12 @@ class TUI:
 
         # Draw status bar and input (always same position)
         self._draw_status_bar(status_y, W, status, wfile, expression)
+        
+        # Draw question panel if there's a pending question (overlay on top)
+        question = self.state.get_pending_question()
+        if question and question.get("active"):
+            self._draw_question_panel(input_y, W, question)
+        
         self._draw_input(y=input_y, x=0, h=3, w=W)
 
     def _draw_face_panel(self, y: int, x: int, h: int, w: int):
@@ -872,6 +878,116 @@ class TUI:
                 pass
         except Exception:
             # Catch any errors to prevent crash
+            pass
+
+    def _draw_question_panel(self, y: int, W: int, question: Dict):
+        """Draw question panel with scrollable options and custom answer input."""
+        try:
+            q_text = str(question.get("question", "?"))
+            options = question.get("options", [])
+            selected = question.get("selected", 0)
+            selected_indices = question.get("selected_indices") or set()
+            
+            # Ensure options is a list
+            if not isinstance(options, list):
+                options = []
+            
+            # Fixed panel size - always same dimensions
+            panel_h = 11  # Fixed height (includes input row)
+            panel_w = min(70, W - 4)
+            panel_x = (W - panel_w) // 2
+            panel_y = y - panel_h  # Position directly above input bar
+            
+            if panel_y < 1:
+                panel_y = 1
+            
+            battr = curses.color_pair(_C["border"]) | curses.A_BOLD
+            selattr = curses.color_pair(_C["tool_hdr"]) | curses.A_BOLD  # Currently highlighted
+            normattr = curses.color_pair(_C["jerry_txt"])
+            mutedattr = curses.color_pair(_C["muted"])
+            checkattr = curses.color_pair(_C["tool_txt"]) | curses.A_BOLD  # Selected (checked)
+            bgattr = curses.color_pair(_C["border"])  # Background fill
+            
+            # Draw border
+            self.stdscr.addstr(panel_y, panel_x, "╭" + "─" * (panel_w - 2) + "╮", battr)
+            for i in range(1, panel_h - 1):
+                self.stdscr.addstr(panel_y + i, panel_x, "│", battr)
+                self.stdscr.addstr(panel_y + i, panel_x + panel_w - 1, "│", battr)
+            self.stdscr.addstr(panel_y + panel_h - 1, panel_x, "╰" + "─" * (panel_w - 2) + "╯", battr)
+            
+            # Fill panel background to prevent bleed-through
+            for i in range(1, panel_h - 1):
+                self.stdscr.addstr(panel_y + i, panel_x + 1, " " * (panel_w - 2), bgattr)
+            
+            # Draw question title (scroll if too long)
+            title = f" ❓ {q_text}"
+            if len(title) > panel_w - 4:
+                title = title[:panel_w - 7] + "..."
+            self.stdscr.addstr(panel_y + 1, panel_x + 2, title[:panel_w-4], selattr | curses.A_BOLD)
+            
+            # Options area: rows 3 to panel_h-3 (leaving room for custom option + input)
+            # Row 2 = instruction, Rows 3-6 = options (4 visible), Row 7 = custom, Row 8 = input
+            options_start_row = panel_y + 3
+            options_end_row = panel_y + panel_h - 4  # Row before custom
+            visible_rows = options_end_row - options_start_row  # 4 rows
+            
+            # Calculate scroll offset to keep selected item visible
+            scroll_offset = 0
+            if selected >= visible_rows:
+                scroll_offset = selected - visible_rows + 1
+            
+            # Draw instruction
+            self.stdscr.addstr(panel_y + 2, panel_x + 2, "↑↓ scroll, Space select, Enter confirm:", normattr)
+            
+            # Draw options with scrolling
+            for visible_idx in range(visible_rows):
+                actual_idx = scroll_offset + visible_idx
+                if actual_idx >= len(options):
+                    break
+                
+                row = options_start_row + visible_idx
+                
+                # Determine marker and color based on state
+                is_selected = actual_idx in selected_indices  # Checked with Space
+                is_highlighted = actual_idx == selected  # Current cursor position
+                
+                if is_selected and is_highlighted:
+                    marker = "◉"  # Both selected and highlighted
+                    attr = checkattr  # Selected color takes priority
+                elif is_selected:
+                    marker = "✓"  # Selected only
+                    attr = checkattr
+                elif is_highlighted:
+                    marker = "●"  # Highlighted only
+                    attr = selattr
+                else:
+                    marker = "○"  # Neither
+                    attr = normattr
+                
+                opt_text = f"  {marker} {str(options[actual_idx])[:panel_w-12]}"
+                self.stdscr.addstr(row, panel_x + 2, opt_text[:panel_w-4], attr)
+            
+            # Draw custom answer option (always visible at bottom)
+            custom_row = panel_y + panel_h - 3
+            is_custom_selected = selected >= len(options)
+            custom_marker = "●" if is_custom_selected else "○"
+            custom_text = f"  {custom_marker} ── Type custom answer below ──"
+            custom_attr = selattr if is_custom_selected else mutedattr
+            self.stdscr.addstr(custom_row, panel_x + 2, custom_text[:panel_w-4], custom_attr)
+            
+            # Draw input buffer INSIDE panel (for custom answer)
+            input_row = panel_y + panel_h - 2
+            prompt = "Answer: "
+            avail = panel_w - len(prompt) - 4
+            disp = (self.input_buf[-avail:]
+                    if len(self.input_buf) > avail else self.input_buf)
+            self.stdscr.addstr(input_row, panel_x + 2, prompt,
+                              curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
+            self.stdscr.addstr(input_row, panel_x + 2 + len(prompt), disp,
+                              curses.color_pair(_C["inp_txt"]))
+            
+        except Exception as e:
+            # Silently fail - don't crash UI
             pass
 
     def _draw_todo_vertical(self, todos: List[Todo], y: int, x: int, h: int, w: int):
@@ -1444,35 +1560,56 @@ class TUI:
     # ── Input bar ─────────────────────────────────────────────────────────────
 
     def _draw_input(self, y: int, x: int, h: int, w: int):
-        hint = ("/log  /chat  /todo  /clear  /inject  /quit  /help"
-                if self.input_buf.startswith("/")
-                else "↑↓ scroll   /help for commands")
+        # Check if question is active
+        question = self.state.get_pending_question()
+        if question and question.get("active"):
+            # Show minimal hint during question - NO INPUT TEXT (it's in panel)
+            hint = "Type answer in panel ↑"
+            
+            battr = curses.color_pair(_C["border"]) | curses.A_BOLD
+            hpad  = max(0, w - len(hint) - 5)
+            try:
+                self.stdscr.addstr(y,     x,
+                                   f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
+                self.stdscr.addstr(y+h-1, x,
+                                   ("╰" + "─"*(w-2) + "╯")[:w], battr)
+                for r in range(y+1, y+h-1):
+                    self.stdscr.addstr(r, x,     "│", battr)
+                    self.stdscr.addstr(r, x+w-1, "│", battr)
+                # Don't draw input text - it's in the panel
+            except curses.error:
+                pass
+        else:
+            # Normal input bar
+            hint = ("/log  /chat  /todo  /clear  /inject  /load  /listio  /cleario  /quit  /help"
+                    if self.input_buf.startswith("/")
+                    else "↑↓ scroll   /help for commands")
 
-        battr = curses.color_pair(_C["border"]) | curses.A_BOLD
-        hpad  = max(0, w - len(hint) - 5)
-        try:
-            self.stdscr.addstr(y,     x,
-                               f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
-            self.stdscr.addstr(y+h-1, x,
-                               ("╰" + "─"*(w-2) + "╯")[:w], battr)
-            for r in range(y+1, y+h-1):
-                self.stdscr.addstr(r, x,     "│", battr)
-                self.stdscr.addstr(r, x+w-1, "│", battr)
-        except curses.error:
-            pass
+            battr = curses.color_pair(_C["border"]) | curses.A_BOLD
+            hpad  = max(0, w - len(hint) - 5)
+            try:
+                self.stdscr.addstr(y,     x,
+                                   f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
+                self.stdscr.addstr(y+h-1, x,
+                                   ("╰" + "─"*(w-2) + "╯")[:w], battr)
+                for r in range(y+1, y+h-1):
+                    self.stdscr.addstr(r, x,     "│", battr)
+                    self.stdscr.addstr(r, x+w-1, "│", battr)
+            except curses.error:
+                pass
 
-        prompt = " ›  "
-        avail  = max(1, w - len(prompt) - 3)
-        disp   = (self.input_buf[-avail:]
-                  if len(self.input_buf) > avail else self.input_buf)
-        try:
-            self.stdscr.addstr(y+1, x+1, prompt,
-                               curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
-            self.stdscr.addstr(y+1, x+1+len(prompt), disp,
-                               curses.color_pair(_C["inp_txt"]))
-            self.stdscr.move(y+1, x+1+len(prompt)+len(disp))
-        except curses.error:
-            pass
+            prompt = " ›  "
+            avail  = max(1, w - len(prompt) - 3)
+            disp   = (self.input_buf[-avail:]
+                      if len(self.input_buf) > avail else self.input_buf)
+            try:
+                self.stdscr.addstr(y+1, x+1, prompt,
+                                   curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
+                self.stdscr.addstr(y+1, x+1+len(prompt), disp,
+                                   curses.color_pair(_C["inp_txt"]))
+                self.stdscr.move(y+1, x+1+len(prompt)+len(disp))
+            except curses.error:
+                pass
 
     # ── Window-based drawing methods (for double-buffering) ─────────────────
 
@@ -1748,35 +1885,44 @@ class TUI:
             pass
 
     def _draw_input_to_window(self, win, y: int, x: int, h: int, w: int):
-        """Draw input bar to specified window.
-        
-        Args:
-            win: Window to draw to
-            y, x: Position
-            h, w: Dimensions
-        """
+        """Draw input bar to specified window."""
         try:
-            hint = ("/log  /chat  /todo  /clear  /inject  /quit  /help"
-                    if self.input_buf.startswith("/")
-                    else "↑↓ scroll   /help for commands")
+            # Check if question is active
+            question = self.state.get_pending_question()
+            if question and question.get("active"):
+                # Show minimal hint during question - NO INPUT TEXT (it's in panel)
+                hint = "Type answer in panel ↑"
+                
+                battr = curses.color_pair(_C["border"]) | curses.A_BOLD
+                hpad = max(0, w - len(hint) - 5)
+                win.addstr(y, x, f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
+                win.addstr(y + h - 1, x, ("╰" + "─"*(w-2) + "╯")[:w], battr)
+                for r in range(y + 1, y + h - 1):
+                    win.addstr(r, x, "│", battr)
+                    win.addstr(r, x + w - 1, "│", battr)
+                # Don't draw input text - it's in the panel
+            else:
+                hint = ("/log  /chat  /todo  /clear  /inject  /load  /listio  /cleario  /quit  /help"
+                        if self.input_buf.startswith("/")
+                        else "↑↓ scroll   /help for commands")
 
-            battr = curses.color_pair(_C["border"]) | curses.A_BOLD
-            hpad = max(0, w - len(hint) - 5)
-            win.addstr(y, x, f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
-            win.addstr(y + h - 1, x, ("╰" + "─"*(w-2) + "╯")[:w], battr)
-            for r in range(y + 1, y + h - 1):
-                win.addstr(r, x, "│", battr)
-                win.addstr(r, x + w - 1, "│", battr)
+                battr = curses.color_pair(_C["border"]) | curses.A_BOLD
+                hpad = max(0, w - len(hint) - 5)
+                win.addstr(y, x, f"╭─ {hint[:max(0,w-5)]} {'─'*hpad}╮"[:w], battr)
+                win.addstr(y + h - 1, x, ("╰" + "─"*(w-2) + "╯")[:w], battr)
+                for r in range(y + 1, y + h - 1):
+                    win.addstr(r, x, "│", battr)
+                    win.addstr(r, x + w - 1, "│", battr)
 
-            prompt = " ›  "
-            avail = max(1, w - len(prompt) - 3)
-            disp = (self.input_buf[-avail:]
-                    if len(self.input_buf) > avail else self.input_buf)
-            win.addstr(y + 1, x + 1, prompt,
-                      curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
-            win.addstr(y + 1, x + 1 + len(prompt), disp,
-                      curses.color_pair(_C["inp_txt"]))
-            win.move(y + 1, x + 1 + len(prompt) + len(disp))
+                prompt = " ›  "
+                avail = max(1, w - len(prompt) - 3)
+                disp = (self.input_buf[-avail:]
+                        if len(self.input_buf) > avail else self.input_buf)
+                win.addstr(y + 1, x + 1, prompt,
+                          curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
+                win.addstr(y + 1, x + 1 + len(prompt), disp,
+                          curses.color_pair(_C["inp_txt"]))
+                win.move(y + 1, x + 1 + len(prompt) + len(disp))
         except curses.error:
             pass
 
@@ -1866,6 +2012,102 @@ class TUI:
                 pass
             return True
 
+        # Check if there's a pending question - handle specially
+        question = self.state.get_pending_question()
+        if question and question.get("active"):
+            # Allow quit/exit even during question
+            if key in (17, ord('q')):  # Ctrl+Q or q
+                return False  # Signal quit
+            elif key in (10, 13, curses.KEY_ENTER) and self.input_buf.strip() == "/quit":
+                return False  # Allow /quit during question
+            elif key in (10, 13, curses.KEY_ENTER) and self.input_buf.strip() == "/exit":
+                return False  # Allow /exit during question
+            
+            options = question.get("options", [])
+            if not isinstance(options, list):
+                options = []
+            selected = question.get("selected", 0)
+            selected_indices = question.get("selected_indices", set())  # Multi-select
+            
+            # Handle question navigation
+            if key == curses.KEY_UP:
+                if options:
+                    with self.state._lock:
+                        # Scroll up through options, wrap to custom at top
+                        new_selected = selected - 1
+                        if new_selected < 0:
+                            new_selected = len(options)  # Custom option
+                        question["selected"] = new_selected
+                return True
+            elif key == curses.KEY_DOWN:
+                if options:
+                    with self.state._lock:
+                        # Scroll down through options, wrap to first at bottom
+                        new_selected = selected + 1
+                        if new_selected > len(options):
+                            new_selected = 0  # Wrap to first option
+                        question["selected"] = new_selected
+                return True
+            elif key == ord(' '):
+                # Toggle selection for multi-select (only if on an option, not custom)
+                if options and selected < len(options):
+                    with self.state._lock:
+                        if selected not in selected_indices:
+                            selected_indices.add(selected)
+                        else:
+                            selected_indices.discard(selected)
+                        question["selected_indices"] = selected_indices
+                    return True
+                # If on custom option, fall through to text input (to type space)
+            elif key in (10, 13, curses.KEY_ENTER):
+                # Submit answer
+                raw = self.input_buf.strip()
+                self.input_buf = ""
+                
+                if raw:
+                    # Custom answer typed
+                    self.state.answer_question(raw)
+                elif selected_indices:
+                    # Submit all selected options
+                    answers = [options[i] for i in sorted(selected_indices)]
+                    self.state.answer_question(answers)
+                elif selected < len(options):
+                    # Submit highlighted option (default fallback)
+                    self.state.answer_question(options[selected])
+                else:
+                    # Custom option selected but no text - submit empty or wait
+                    # For now, just submit empty string to avoid lock
+                    self.state.answer_question("")
+                
+                # Clear pending question immediately
+                self.state.clear_pending_question()
+                
+                # Clear input and force refresh
+                self.input_buf = ""
+                try:
+                    self.stdscr.refresh()
+                except:
+                    pass
+                
+                return True
+            
+            # Text input for custom answer (always works, including space)
+            if 32 <= key < 127:
+                self.input_buf += chr(key)
+                # Auto-select custom option when typing
+                with self.state._lock:
+                    question["selected"] = len(options) if options else 0
+                return True
+            
+            # Backspace
+            if key in (curses.KEY_BACKSPACE, 127, 8):
+                self.input_buf = self.input_buf[:-1]
+                return True
+            
+            # Block other keys
+            return True
+
+        # Normal mode - no pending question
         if key == curses.KEY_UP:
             self.scroll      += 1
             self.log_scroll  += 1
@@ -1933,6 +2175,18 @@ class TUI:
             else:
                 self.state.push_log("info", "usage: /inject <message>")
 
+        elif cmd == "load":
+            # Upload file(s) from device to jerry_workspace/io/
+            self._handle_load_command(parts)
+
+        elif cmd == "cleario":
+            # Clear all files from io/ directory
+            self._handle_cleario_command()
+
+        elif cmd == "listio":
+            # List files in io/ directory
+            self._handle_listio_command()
+
         elif cmd == "compress":
             # Compress conversation history using worker
             self.state.push_log("info", "Compressing conversation history...")
@@ -1977,6 +2231,9 @@ class TUI:
             self.state.push_log("info", "/chat_threshold <n> full feed at N+ rows (default: 15)")
             self.state.push_log("info", "/praise [reason]  reward Jerry with coins (default: 'Great job!')")
             self.state.push_log("info", "/coins            check Jerry's coin balance")
+            self.state.push_log("info", "/load             upload file(s) to io/ folder")
+            self.state.push_log("info", "/listio           list files in io/ folder")
+            self.state.push_log("info", "/cleario          delete all files from io/")
             self.state.push_log("info", "/quit             exit jerry")
             self.state.push_log("info", "/inject <msg>     inject into agent stream")
             self.state.push_log("info", "──────────────────────────────────────────────")
@@ -2097,3 +2354,173 @@ class TUI:
             self.state.push_log("error", f"unknown command: /{cmd}  —  try /help")
 
         return True
+
+    # ── File Upload Commands ───────────────────────────────────────────────────
+
+    def _handle_load_command(self, parts):
+        """Handle /load command - copy file(s) to jerry_workspace/io/
+        
+        Usage:
+          /load <path> [path2] ...  - Copy specified file(s) to io/
+          /load                      - Shows help message
+        """
+        import os
+        import shutil
+        from .config import JERRY_BASE
+
+        # Ensure io/ directory exists
+        io_dir = os.path.join(JERRY_BASE, "io")
+        os.makedirs(io_dir, exist_ok=True)
+
+        # Check if paths provided
+        if not parts:
+            self.state.push_log("info", "Usage: /load <file_path> [file2] ...")
+            self.state.push_log("info", "Example: /load /sdcard/Download/screenshot.png")
+            self.state.push_log("info", "Files will be copied to jerry_workspace/io/")
+            return
+
+        uploaded_files = []
+        
+        for src_path in parts:
+            # Expand ~ to home directory
+            src_path = os.path.expanduser(src_path)
+            
+            if not os.path.exists(src_path):
+                self.state.push_log("error", f"File not found: {src_path}")
+                continue
+            
+            if not os.path.isfile(src_path):
+                self.state.push_log("error", f"Not a file: {src_path}")
+                continue
+            
+            filename = os.path.basename(src_path)
+            dest_path = os.path.join(io_dir, filename)
+            
+            # Handle naming conflicts
+            if os.path.exists(dest_path):
+                self.state.push_log("info", f"File exists: {filename}")
+                # Auto-rename with number
+                name_parts = filename.rsplit('.', 1)
+                counter = 2
+                while os.path.exists(dest_path):
+                    if len(name_parts) == 2:
+                        new_filename = f"{name_parts[0]}_{counter}.{name_parts[1]}"
+                    else:
+                        new_filename = f"{filename}_{counter}"
+                    dest_path = os.path.join(io_dir, new_filename)
+                    counter += 1
+                self.state.push_log("info", f"Renamed to: {os.path.basename(dest_path)}")
+            
+            # Copy file
+            try:
+                shutil.copy2(src_path, dest_path)
+                file_size = os.path.getsize(dest_path)
+                
+                # Detect file type
+                ext = os.path.splitext(filename)[1].lower().lstrip('.')
+                mime_type = "unknown"
+                if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
+                    mime_type = "image"
+                elif ext in ['txt', 'md', 'py', 'js', 'json', 'yaml', 'yml']:
+                    mime_type = "text"
+                elif ext in ['pdf', 'doc', 'docx']:
+                    mime_type = "document"
+                
+                uploaded_files.append({
+                    "filename": os.path.basename(dest_path),
+                    "size": file_size,
+                    "type": mime_type,
+                    "ext": ext
+                })
+                
+                self.state.push_log("info", f"✓ Copied: {os.path.basename(dest_path)} ({file_size:,} bytes)")
+            except Exception as e:
+                self.state.push_log("error", f"Failed to copy {filename}: {e}")
+        
+        # Build auto-message for Jerry
+        if uploaded_files:
+            file_list = "\n".join([
+                f"- **{f['filename']}** ({f['size']:,} bytes, {f['type']})"
+                for f in uploaded_files
+            ])
+            
+            # Customize message based on file types
+            has_images = any(f['type'] == 'image' for f in uploaded_files)
+            has_code = any(f['ext'] in ['py', 'js', 'ts', 'java', 'c', 'cpp', 'h'] for f in uploaded_files)
+            
+            if has_images:
+                hint = "💡 **Tip:** These are image files. I can analyze them with my vision capabilities using `read_file()`!"
+            elif has_code:
+                hint = "💡 **Tip:** These are code files. I can read and analyze them with `read_file()`!"
+            else:
+                hint = "💡 **Tip:** You can read these files with `read_file(path=\"io/filename\")`"
+            
+            auto_message = f"""📎 **File Upload Complete**
+
+**Files uploaded to `io/` directory:**
+{file_list}
+
+{hint}"""
+            
+            # Inject to Jerry's inbox
+            self.state.add_inbox(auto_message)
+            self.state.push_log("info", f"📎 {len(uploaded_files)} file(s) uploaded to io/")
+        else:
+            self.state.push_log("info", "No files uploaded")
+
+    def _handle_cleario_command(self):
+        """Handle /cleario command - delete all files in io/ directory"""
+        import os
+        import shutil
+        from .config import JERRY_BASE
+
+        io_dir = os.path.join(JERRY_BASE, "io")
+        
+        if not os.path.exists(io_dir):
+            self.state.push_log("info", "io/ directory doesn't exist yet")
+            return
+
+        try:
+            # Count files first
+            files = os.listdir(io_dir)
+            file_count = len([f for f in files if os.path.isfile(os.path.join(io_dir, f))])
+            
+            if file_count == 0:
+                self.state.push_log("info", "io/ directory is already empty")
+                return
+
+            # Delete all files
+            for filename in os.listdir(io_dir):
+                filepath = os.path.join(io_dir, filename)
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+            
+            self.state.push_log("info", f"✓ Cleared {file_count} file(s) from io/")
+        except Exception as e:
+            self.state.push_log("error", f"Error clearing io/: {e}")
+
+    def _handle_listio_command(self):
+        """Handle /listio command - list files in io/ directory"""
+        import os
+        from .config import JERRY_BASE
+
+        io_dir = os.path.join(JERRY_BASE, "io")
+        
+        if not os.path.exists(io_dir):
+            self.state.push_log("info", "io/ directory doesn't exist yet")
+            return
+
+        try:
+            files = os.listdir(io_dir)
+            if not files:
+                self.state.push_log("info", "io/ directory is empty")
+                return
+
+            self.state.push_log("info", f"📁 Files in io/ ({len(files)} total):")
+            for filename in sorted(files):
+                filepath = os.path.join(io_dir, filename)
+                if os.path.isfile(filepath):
+                    size = os.path.getsize(filepath)
+                    self.state.push_log("info", f"  • {filename} ({size:,} bytes)")
+        except Exception as e:
+            self.state.push_log("error", f"Error listing io/: {e}")

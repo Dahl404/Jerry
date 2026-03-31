@@ -56,12 +56,28 @@ class Agent:
                             self.state.set_phase("planning")
                         else:
                             # Has pending todos — user is providing extra context; continue execution
-                            pending_count = sum(1 for t in self.state.todos if not t.done)
-                            exec_prompt = (
-                                f"[user message] {m}\n\n"
-                                f"You have {pending_count} pending todos. Continue working on task #0.\n"
-                                f"Call todo_complete(index=0) when done."
-                            )
+                            # Build full todo context so model knows what it's working on
+                            pending_todos = [t for t in self.state.todos if not t.done]
+                            current_task = pending_todos[0].text if pending_todos else "unknown"
+                            
+                            pending_list = "\n".join([
+                                f"  {'✓' if t.done else '○'} #{t.id}: {t.text}"
+                                for t in pending_todos[:5]
+                            ])
+                            
+                            exec_prompt = f"""\
+[user message] {m}
+
+**Current Task:** {current_task}
+
+**Pending Tasks:**
+{pending_list}
+
+**Instructions:**
+- Consider the user's message above
+- Continue working on the current task
+- Call todo_complete() with no arguments to complete the first pending task
+"""
                             self.conv.append({"role": "user", "content": exec_prompt})
                             last_task_text = None  # Reset so a fresh prompt is injected next cycle
                             self.state.set_phase("executing")
@@ -96,13 +112,35 @@ class Agent:
 
                     self.state.set_phase("executing")
                     current_task = pending[0].text
+                    
+                    # Build todo context for the model
+                    # Include current task #0 and all pending tasks so model knows what to work on
+                    pending_list = "\n".join([
+                        f"  {'✓' if t.done else '○'} #{t.id}: {t.text}"
+                        for t in pending[:5]  # Show first 5 pending tasks
+                    ])
+                    remaining = len(pending) - 5
+                    if remaining > 0:
+                        pending_list += f"\n  ... and {remaining} more tasks"
+                    
+                    # Inject [continue] with full todo context
+                    # This ensures the model knows exactly what to work on
+                    continue_prompt = f"""\
+[continue]
 
-                    # Always inject [continue] to keep working on task #0
-                    # This is the Qwen-Code CLI pattern: model keeps working until:
-                    # 1. Task is complete (calls todo_complete)
-                    # 2. User interrupts with new message
-                    # 3. Model asks user a question (ask_user tool)
-                    self.conv.append({"role": "user", "content": "[continue]"})
+**Current Task:** {current_task}
+
+**Pending Tasks:**
+{pending_list}
+
+**Instructions:**
+- Continue working on the current task above
+- Use tools to complete the task
+- Call todo_complete() with no arguments to complete the first pending task
+- If blocked, ask for clarification with ask_user()
+"""
+
+                    self.conv.append({"role": "user", "content": continue_prompt})
 
                     self._cycle(max_turns=50)
                     last_action_time = time.time()
@@ -128,7 +166,7 @@ class Agent:
                             f"- **Explore** for a SPECIFIC thing? → Know what you're looking for first\n"
                             f"- **Create** something new? → Start with a clear goal\n"
                             f"- **Wait** for user input? → If no clear direction\n\n"
-                            
+
                             f"**Rules:**\n"
                             f"- Don't explore aimlessly - know WHAT you're looking for\n"
                             f"- Don't check every folder - check only RELEVANT ones\n"
@@ -157,13 +195,28 @@ class Agent:
 
         try:
             for turn in range(max_turns):
-                # Check for user interruption at start of each turn (don't drain - let main loop handle)
-                with self.state._lock:
-                    has_pending_msgs = len(self.state.inbox) > 0
+                # Check for pending question - BLOCKS until answered
+                question = self.state.get_pending_question()
                 
+                if question and question.get("active"):
+                    # Question is pending - STOP processing and wait
+                    # Don't call model, don't continue loop
+                    self.state.set_status("waiting for answer...")
+                    time.sleep(0.3)  # Small sleep
+                    continue  # Keep checking, but don't do anything
+                
+                # Check for user interruption at start of each turn
+                has_pending_msgs = False
+                try:
+                    self.state._lock.acquire()
+                    has_pending_msgs = len(self.state.inbox) > 0
+                    # Clear the question if answer was submitted
+                    if has_pending_msgs:
+                        self.state.clear_pending_question()
+                finally:
+                    self.state._lock.release()
+
                 if has_pending_msgs:
-                    # User wants to interrupt - exit cycle so main loop can handle it
-                    # Main loop will drain inbox and add user message to conversation
                     self._update_token_count()
                     return  # Exit cycle - main loop will process the interruption
 
@@ -179,12 +232,24 @@ class Agent:
                     return
 
                 tool_calls = msg.get("tool_calls") or []
+                
+                # Debug: Log what we got from API
+                self.state.push_log("debug", f"API returned {len(tool_calls)} structured tool_calls")
+                if msg.get("content"):
+                    self.state.push_log("debug", f"Content preview: {msg['content'][:200]}...")
 
                 # FALLBACK: Parse tool calls from content if not in structured format
                 if not tool_calls and msg.get("content"):
                     tool_calls = self._parse_tool_calls_fallback(msg["content"])
                     if tool_calls:
                         self.state.push_log("debug", f"Fallback parser found {len(tool_calls)} tool calls")
+                elif tool_calls and msg.get("content"):
+                    # ALSO check content for bracket-style calls (might have more params)
+                    bracket_calls = self._parse_tool_calls_fallback(msg["content"])
+                    if bracket_calls:
+                        # Prefer bracket calls - they might have options array etc.
+                        self.state.push_log("debug", f"Found {len(bracket_calls)} bracket-style tool calls, using instead of structured")
+                        tool_calls = bracket_calls
 
                 # Loop detection — returns True and breaks if stuck
                 if self._check_tool_loop(tool_calls, recent_tool_calls):
@@ -194,6 +259,8 @@ class Agent:
                 # CRITICAL FIX: content must be "" not None when tool_calls exist (llama-server requirement)
                 # Also validate tool_calls before saving to prevent 400 errors
                 valid_tool_calls = []
+                seen_names = set()  # Deduplicate tool calls
+                
                 for tc in tool_calls:
                     # Validate tool call has required fields
                     tc_id = tc.get('id', '')
@@ -210,6 +277,12 @@ class Agent:
                     if not tc_name:
                         self.state.push_log("debug", f"Skipping invalid tool call: id='{tc_id}', name='{tc_name}'")
                         continue
+                    
+                    # Skip duplicate tool calls (model sometimes outputs same call twice)
+                    if tc_name in seen_names:
+                        self.state.push_log("debug", f"Skipping duplicate tool call: {tc_name}")
+                        continue
+                    seen_names.add(tc_name)
 
                     # Ensure arguments is at least an empty dict if missing
                     if tc_args is None:
@@ -299,12 +372,54 @@ class Agent:
     def _parse_tool_calls_fallback(self, content: str) -> List[Dict]:
         """Parse tool calls from content when not in structured format.
 
-        Handles three patterns:
+        Handles multiple patterns:
+        0. Bracket style: [ask_user(question="...")]
         1. function_name with JSON args in tags: <function_name>{...}</function_name>
         2. XML-style: <function_name><param>value</param></function_name>
         3. Qwen format: <function=name> <parameter=key>val</parameter> </function>
         """
         tool_calls = []
+
+        # ── Pattern 0: Bracket style [tool_name(arg="value", arg2=123)] ────────
+        # Matches: [ask_user(question="What?")] or [capture_screen(lines=50)]
+        bracket_pattern = r'\[(\w+)\(([^)]*)\)\]'
+        for match in re.finditer(bracket_pattern, content):
+            func_name = match.group(1)
+            args_str = match.group(2)
+
+            # Parse arguments - handle strings, numbers, and arrays
+            params = {}
+            if args_str.strip():
+                # Match: arg="value" or arg='value' or arg=123 or arg=["a","b"]
+                # More flexible pattern to handle arrays
+                arg_pattern = r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\d+)|\[([^\]]*)\])'
+                for arg_match in re.finditer(arg_pattern, args_str):
+                    arg_name = arg_match.group(1)
+                    # Get whichever group matched
+                    str_val = arg_match.group(2) or arg_match.group(3)
+                    num_val = arg_match.group(4)
+                    array_val = arg_match.group(5)
+                    
+                    if array_val is not None:
+                        # Parse array - extract quoted strings
+                        array_items = re.findall(r'"([^"]*)"', array_val)
+                        if not array_items:
+                            array_items = re.findall(r"'([^']*)'", array_val)
+                        params[arg_name] = array_items
+                    elif num_val is not None:
+                        params[arg_name] = int(num_val)
+                    elif str_val is not None:
+                        params[arg_name] = str_val
+                    # Ignore params that don't match any pattern (like reply="ask_user")
+
+            tool_calls.append({
+                "id": f"call_{int(time.time()*1000)}_{len(tool_calls)}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": json.dumps(params),
+                },
+            })
         
         # Pattern 1: <function_name>{JSON}</function_name>
         pattern1 = r'<(\w+)>\s*(\{[^}]+\})\s*</\1>'
@@ -379,7 +494,7 @@ class Agent:
 
     def _execute_tool_calls(self, tool_calls: List[Dict]):
         """Run every tool call in *tool_calls* and append result messages to conv.
-        
+
         VERIFICATION: Checks that tools actually succeeded before marking complete.
         """
         in_stream = self.state.is_stream_mode()
@@ -387,6 +502,10 @@ class Agent:
 
         for tc in tool_calls:
             name = tc["function"]["name"]
+            
+            # Debug: Log what we're executing
+            self.state.push_log("debug", f"Executing tool: {name}")
+            self.state.push_log("debug", f"  Arguments raw: {tc['function'].get('arguments')}")
 
             # Fix: Generate and save ID back to tc dictionary
             if not tc.get("id"):
@@ -410,6 +529,9 @@ class Agent:
                 })
                 execution_results.append((name, False, error_msg))
                 continue
+            
+            # Debug: Log parsed arguments
+            self.state.push_log("debug", f"  Arguments parsed: {args}")
 
             self.state.set_status("working")
             result = self.executor.run(name, args)
@@ -444,6 +566,61 @@ class Agent:
         
         # Return execution summary for verification
         return execution_results
+
+    # ── Multi-modal message processing ─────────────────────────────────────────
+    def _process_multimodal_messages(self, messages: List[Dict]) -> List[Dict]:
+        """Process messages to handle image data for multi-modal models.
+        
+        Converts tool results with [IMAGE: ...] markers into multi-modal format.
+        llama-server expects images as data URLs in the content array.
+        
+        Args:
+            messages: List of conversation messages
+        
+        Returns:
+            Messages with images converted to multi-modal format
+        """
+        import re
+        
+        processed = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            
+            # Check if this is a tool result with image data
+            if role == "tool" and isinstance(content, str) and "[IMAGE:" in content:
+                # Extract image path and base64 data
+                image_match = re.search(r'\[IMAGE: ([^\]]+)\]', content)
+                base64_match = re.search(r'Base64 data: ([a-zA-Z0-9+/=]+)', content)
+                format_match = re.search(r'Format: (\w+)', content)
+                
+                if image_match and base64_match:
+                    image_path = image_match.group(1)
+                    image_data = base64_match.group(1)
+                    image_format = format_match.group(1).lower() if format_match else "png"
+                    
+                    # Convert to multi-modal format for llama-server
+                    # Content becomes an array with text and image_url objects
+                    msg = {
+                        "role": "tool",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Image loaded: {image_path}"
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/{image_format};base64,{image_data}"
+                                }
+                            }
+                        ],
+                        "tool_call_id": msg.get("tool_call_id")
+                    }
+            
+            processed.append(msg)
+        
+        return processed
 
     # ── API call with streaming ────────────────────────────────────────────────
     def _call_model_streaming(self) -> Dict:
@@ -487,10 +664,13 @@ class Agent:
                         "content": messages[-1]["content"] + context_note,
                     }
 
+                # Process messages for multi-modal support (images)
+                messages = self._process_multimodal_messages(messages)
+
                 # DEBUG: Log what we're sending on retry
                 if attempt > 0:
                     self.state.push_log("debug", f"API call retry attempt {attempt + 1}/{max_retries}")
-                
+
                 # Log conversation state for debugging
                 tool_call_count = sum(1 for m in messages if m.get('tool_calls'))
                 self.state.push_log("debug", f"Sending {len(messages)} messages ({tool_call_count} with tool_calls), tools={len(TOOLS)}")
@@ -531,14 +711,26 @@ class Agent:
                 # Set status to streaming when we start receiving data
                 self.state.set_status("streaming")
 
+                # Iterate over streaming chunks
                 for line in r.iter_lines():
-                    # Check for user interruption EVERY iteration (allows immediate interrupt)
-                    with self.state._lock:
-                        if len(self.state.inbox) > 0:
-                            self.state.push_log("debug", "User interrupted streaming!")
-                            self.state.set_status("interrupted by user")
-                            return accumulated  # Return what we have so far
+                    # Check for user interrupt after each chunk
+                    # Quick lock/unlock to avoid deadlock with UI render
+                    has_inbox = False
+                    try:
+                        self.state._lock.acquire()
+                        has_inbox = len(self.state.inbox) > 0
+                    finally:
+                        self.state._lock.release()
                     
+                    if has_inbox:
+                        self.state.push_log("debug", "User interrupted streaming!")
+                        self.state.set_status("interrupted by user")
+                        try:
+                            r.close()  # Stop the stream
+                        except:
+                            pass
+                        return accumulated  # Return partial response
+
                     if line:
                         line_str = line.decode('utf-8')
                         if line_str.startswith('data: '):

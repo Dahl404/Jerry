@@ -113,12 +113,14 @@ class Executor:
         elif name == "set_target_session":   return self._set_target_session(a["session"])
         elif name == "run_program":           return self._run_program(a["command"], a.get("session", "jerry-control"))
         # Question tool
-        elif name == "ask_user":             return self._ask_user(a["question"])
+        elif name == "ask_user":             return self._ask_user(a["question"], a.get("options"))
         # Coin/reward system tools (Jerry CAN use these)
         elif name == "check_coins":          return self._check_coins()
         elif name == "offer_coins":          return self._offer_coins(a.get("amount", 0), a.get("reason", ""))
         # Multi-file worker support
         elif name == "load_multiple_files":  return self._load_multiple_files(a.get("files", []))
+        # Worker program creation
+        elif name == "worker_write_program": return self._worker_write_program(a.get("path"), a.get("spec"), a.get("language", "python"))
         # NOTE: 'praise' is USER-ONLY via /praise command, not a tool Jerry can call
         else:
             return f"Unknown tool: {name}"
@@ -231,26 +233,64 @@ class Executor:
 
     # ── File write ─────────────────────────────────────────────────────────────
     def _write(self, path: str, content: str) -> str:
+        """Write file with streaming progress feedback."""
         is_valid, abs_path, error = self._validate_path(path)
         if not is_valid:
             return error
+        
+        # Stream start message to chat
+        char_count = len(content)
+        line_count = content.count('\n') + 1
+        self.state.push_chat("dao", f"✏️ Writing `{path}`... ({char_count:,} chars, {line_count} lines)", expression="thinking")
+        
         try:
             d = os.path.dirname(abs_path)
             if d:
                 os.makedirs(d, exist_ok=True)
             with open(abs_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            return f"Wrote {len(content):,} chars → {path}"
+            
+            # Stream completion message
+            self.state.push_chat("dao", f"✓ Wrote `{path}` ({char_count:,} chars)", expression="smiling")
+            return f"Wrote {char_count:,} chars → {path}"
         except Exception as e:
+            # Stream error message
+            self.state.push_chat("dao", f"✗ Failed to write `{path}`: {e}", expression="bummed")
             return f"ERROR: {e}"
 
     # ── File read (returns content only, worker loaded on query) ──────────────
     def _read(self, path: str, start: int, maxl: int) -> str:
+        """Read file with line numbers. Supports text files and images.
+        
+        For images: Returns base64-encoded data for multi-modal model analysis.
+        For text: Returns line-numbered content as usual.
+        """
         is_valid, abs_path, error = self._validate_path(path)
         if not is_valid:
             return error
         if not os.path.exists(abs_path):
             return f"ERROR: File not found: {path}"
+        
+        # Check if it's an image file
+        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+        file_ext = os.path.splitext(path)[1].lower()
+        
+        if file_ext in image_extensions:
+            # Read image as base64 for multi-modal model
+            try:
+                import base64
+                with open(abs_path, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                # Get file size for display
+                file_size = os.path.getsize(abs_path)
+                
+                # Return special format for images
+                return f"[IMAGE: {path}]\nFormat: {file_ext[1:].upper()}\nSize: {file_size:,} bytes\nBase64 data: {image_data[:500]}...[truncated]\n\n[Full base64 data available in agent context for multi-modal analysis]"
+            except Exception as e:
+                return f"ERROR reading image: {e}"
+        
+        # Text file - original behavior
         try:
             with open(abs_path, "r", encoding="utf-8") as f:
                 all_lines = f.readlines()
@@ -690,22 +730,43 @@ class Executor:
             self.state.disable_stream_mode()
             return f"ERROR running program: {e}"
 
-    def _ask_user(self, question: str) -> str:
-        """Ask the user a question. Blocks until user responds.
-        
-        This tool pauses Jerry's autonomous loop to wait for user input.
-        Use when you need clarification, decisions, or additional context.
-        """
-        self.state.push_log("info", f"❓ Jerry asks: {question}")
-        
-        # Push question to chat display
-        self.state.push_chat("dao", f"❓ {question}", expression="questioning")
-        
-        # Set status to waiting
-        self.state.set_status("waiting for answer...")
-        
-        # Return message - the actual waiting happens in the main loop
-        return f"Waiting for user to answer: {question}"
+    def _ask_user(self, question: str, options: list = None) -> str:
+        """Ask the user a question with optional predefined answers."""
+        try:
+            # Debug: Log raw parameters
+            self.state.push_log("info", f"❓ ask_user called")
+            self.state.push_log("info", f"  question={question}")
+            self.state.push_log("info", f"  options={options} (type={type(options).__name__})")
+            
+            # Ensure options is a list
+            if options is None:
+                options = []
+                self.state.push_log("info", f"  → options was None, set to []")
+            elif not isinstance(options, list):
+                options = [str(options)]
+                self.state.push_log("info", f"  → options was not list, converted to {options}")
+            
+            self.state.push_log("info", f"  → Final options: {options}")
+
+            # Store question in state for UI to render
+            self.state.pending_question = {
+                "question": str(question),
+                "options": options,
+                "selected": 0,
+                "selected_indices": set(),  # For multi-select with Space
+                "active": True,
+                "answer": None
+            }
+            
+            self.state.push_log("info", f"  → Stored in pending_question: {self.state.pending_question}")
+
+            # Set status to waiting
+            self.state.set_status("waiting for answer...")
+
+            return f"Waiting for user to answer: {question}"
+        except Exception as e:
+            self.state.push_log("error", f"ask_user error: {e}")
+            return f"Error asking question: {e}"
 
     def _check_coins(self) -> str:
         """Check Jerry's current coin balance."""
@@ -752,23 +813,97 @@ class Executor:
 
     def _load_multiple_files(self, files: list) -> str:
         """Load multiple files into worker context for cross-file analysis.
-        
+
         Args:
             files: List of {path, content} dicts
-        
+
         Returns:
             Confirmation message
         """
         if not files:
             return "❌ No files specified"
-        
+
         try:
             # Convert to list of (path, content) tuples
             file_list = [(f["path"], f["content"]) for f in files]
-            
+
             # Load into worker
             result = self.worker.load_multiple(file_list)
-            
+
             return f"✓ {result}"
         except Exception as e:
             return f"ERROR loading files: {e}"
+
+    def _worker_write_program(self, path: str, spec: str, language: str = "python") -> str:
+        """Have worker AI write a program based on specifications.
+        
+        This is faster than main AI for initial drafts since worker has less context.
+        Main AI can then review, test, and debug as needed.
+        
+        Args:
+            path: File path to write
+            spec: Detailed specification of what to create
+            language: Programming language (default: python)
+        
+        Returns:
+            Result message with file stats
+        """
+        try:
+            # Validate path
+            is_valid, abs_path, error = self._validate_path(path)
+            if not is_valid:
+                return error
+            
+            # Stream start message
+            self.state.push_chat("dao", f"🤖 Worker AI writing `{path}`...", expression="thinking")
+            
+            # Build prompt for worker
+            worker_prompt = f"""You are a code generation assistant. Write a complete, working {language} program based on this specification:
+
+**Specification:**
+{spec}
+
+**Requirements:**
+- Write complete, runnable code
+- Include necessary imports
+- Add clear comments explaining key sections
+- Follow best practices for {language}
+- Handle errors appropriately
+- Include example usage if applicable
+
+Write the complete file content. DO NOT explain or describe - just write the code."""
+
+            # Call worker to generate code
+            generated_code = self.worker.query(worker_prompt)
+            
+            # Extract code from response (remove any markdown fences or explanations)
+            code = generated_code.strip()
+            
+            # Remove markdown code fences if present
+            if code.startswith("```"):
+                # Remove first line (```language) and last line (```)
+                lines = code.split('\n')
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                code = '\n'.join(lines)
+            
+            # Write the file
+            d = os.path.dirname(abs_path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(abs_path, "w", encoding="utf-8") as f:
+                f.write(code)
+            
+            char_count = len(code)
+            line_count = code.count('\n') + 1
+            
+            # Stream completion
+            self.state.push_chat("dao", f"✓ Worker wrote `{path}` ({char_count:,} chars, {line_count} lines)\n\n💡 Main AI should now review and test the code.", expression="smiling")
+            
+            return f"✓ Worker wrote {path} ({char_count:,} chars, {line_count} lines)\n\nGenerated code preview:\n{code[:500]}{'...' if len(code) > 500 else ''}"
+            
+        except Exception as e:
+            self.state.push_chat("dao", f"✗ Worker failed to write `{path}`: {e}", expression="bummed")
+            return f"ERROR: {e}"

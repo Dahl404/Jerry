@@ -80,6 +80,8 @@ class State:
         self.coins: int = 0  # Jerry's coin balance
         self.coin_history: List[Dict] = []  # Track coin transactions
         self._load_coins()  # Load coins from file on startup
+        # Pending question from ask_user tool
+        self.pending_question: Optional[Dict] = None  # {question, options, selected, active, answer}
 
     def _get_coins_file(self) -> str:
         """Get path to coins persistence file."""
@@ -269,8 +271,10 @@ class State:
                 "reason": reason,
                 "ts": ts(),
             })
-            self._save_coins()  # Persist to file
-            self.push_log("info", f"🪙 Jerry earned {amount} coins! Total: {self.coins}")
+            # Don't call _save_coins() inside lock - it calls push_log which needs the lock
+        # Save outside lock to avoid deadlock
+        self._save_coins()
+        self.push_log("info", f"🪙 Jerry earned {amount} coins! Total: {self.coins}")
 
     def spend_coins(self, amount: int, reason: str = "") -> bool:
         """Try to spend coins. Returns True if successful."""
@@ -284,17 +288,61 @@ class State:
                     "reason": reason,
                     "ts": ts(),
                 })
-                self._save_coins()  # Persist to file
-                self.push_log("info", f"💰 Jerry spent {amount} coins. Remaining: {self.coins}")
-                return True
+                # Don't call _save_coins() inside lock
             else:
                 self.push_log("error", f"❌ Not enough coins! Has {self.coins}, needs {amount}")
                 return False
+        
+        # Save outside lock to avoid deadlock
+        if self.coins >= 0:  # Only if spend was successful
+            self._save_coins()
+            self.push_log("info", f"💰 Jerry spent {amount} coins. Remaining: {self.coins}")
+            return True
+        return False
 
     def get_coins(self) -> int:
         """Get current coin balance."""
         with self._lock:
             return self.coins
+
+    def answer_question(self, answer):
+        """Submit answer to pending question. Answer can be string or list."""
+        submitted = False
+        with self._lock:
+            if self.pending_question and self.pending_question.get("active"):
+                # Handle both single answer (string) and multiple answers (list)
+                if isinstance(answer, list):
+                    self.pending_question["answer"] = answer
+                    self.pending_question["active"] = False
+                    answer_str = ", ".join(str(a) for a in answer)
+                    self.inbox.append(f"[answer] {answer_str}")
+                    submitted = True
+                else:
+                    self.pending_question["answer"] = str(answer)
+                    self.pending_question["active"] = False
+                    self.inbox.append(f"[answer] {answer}")
+                    submitted = True
+        
+        # Log outside lock to prevent deadlock
+        if submitted:
+            self.push_log("info", f"✓ Answer submitted")
+
+    def get_pending_question(self) -> Optional[Dict]:
+        """Get current pending question."""
+        with self._lock:
+            return self.pending_question
+
+    def clear_pending_question(self):
+        """Clear pending question after answer is processed."""
+        with self._lock:
+            self.pending_question = None
+
+    def cancel_question(self):
+        """Cancel pending question."""
+        with self._lock:
+            if self.pending_question:
+                self.pending_question["active"] = False
+                self.pending_question = None
 
     # ── Snapshot for rendering ─────────────────────────────────────────────────
     def snapshot(self):
