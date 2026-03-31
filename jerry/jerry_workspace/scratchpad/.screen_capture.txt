@@ -1,0 +1,24 @@
+~/dao/dao_workspace $ nvim new_poem.txt
+~/dao/dao_workspace $ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

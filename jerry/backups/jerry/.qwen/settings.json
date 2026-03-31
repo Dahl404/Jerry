@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//data/data/com.termux/files/home/projects/jerry/**)",
+      "Bash(curl *)"
+    ]
+  },
+  "$version": 3
+}

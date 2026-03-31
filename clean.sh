@@ -73,7 +73,15 @@ echo "═══ Application Logs ═══════════════�
 echo ""
 
 # Remove application logs
-remove_dir "logs" "Application logs (stdout/stderr)"
+if [ -d "logs" ]; then
+    rm -rf "logs"/*
+    rm -rf "logs"/.* 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Removed:${NC} logs/*"
+    ((REMOVED_DIRS++))
+else
+    echo -e "${BLUE}  Skipped:${NC} logs (not found)"
+    ((SKIPPED++))
+fi
 
 echo ""
 echo "═══ Workspace Data ════════════════════════════════════════"
@@ -81,14 +89,20 @@ echo ""
 
 # Clean workspace subdirectories (keep the directory structure)
 if [ -d "jerry_workspace" ]; then
-    clean_dir_contents "jerry_workspace/diary" "Diary entries"
-    clean_dir_contents "jerry_workspace/summaries" "Session summaries"
-    clean_dir_contents "jerry_workspace/persona" "Persona documents"
-    clean_dir_contents "jerry_workspace/logs" "Workspace logs"
-    clean_dir_contents "jerry_workspace/scratchpad" "Scratchpad files"
+    echo -e "${YELLOW}Cleaning:${NC} Workspace contents"
     
-    # Remove workspace entirely if preferred
-    # remove_dir "jerry_workspace" "Entire workspace"
+    # Clean each subdirectory
+    for subdir in diary summaries persona logs scratchpad data programs poems; do
+        if [ -d "jerry_workspace/$subdir" ]; then
+            rm -rf "jerry_workspace/$subdir"/*
+            rm -rf "jerry_workspace/$subdir"/.*  2>/dev/null || true
+            echo -e "${GREEN}  ✓ Cleaned:${NC} jerry_workspace/$subdir"
+        fi
+    done
+    
+    # Remove workspace root files (but keep directory)
+    rm -f "jerry_workspace"/*.* 2>/dev/null || true
+    rm -f "jerry_workspace"/.* 2>/dev/null || true
     
     echo -e "${GREEN}  ✓ Workspace cleaned (directory structure preserved)${NC}"
 else
@@ -101,8 +115,23 @@ echo "═══ Python Cache ═════════════════
 echo ""
 
 # Remove Python cache
-remove_dir "__pycache__" "Root __pycache__"
-remove_dir "jerry_core/__pycache__" "jerry_core __pycache__"
+if [ -d "__pycache__" ]; then
+    rm -rf "__pycache__"
+    echo -e "${GREEN}  ✓ Removed:${NC} __pycache__"
+    ((REMOVED_DIRS++))
+else
+    echo -e "${BLUE}  Skipped:${NC} __pycache__ (not found)"
+    ((SKIPPED++))
+fi
+
+if [ -d "jerry_core/__pycache__" ]; then
+    rm -rf "jerry_core/__pycache__"
+    echo -e "${GREEN}  ✓ Removed:${NC} jerry_core/__pycache__"
+    ((REMOVED_DIRS++))
+else
+    echo -e "${BLUE}  Skipped:${NC} jerry_core/__pycache__ (not found)"
+    ((SKIPPED++))
+fi
 
 # Remove .pyc files
 if [ -d "jerry_core" ]; then

@@ -143,10 +143,7 @@ def main(stdscr):
     local_files = discover_local_files()
     state.set_local_files(local_files)
 
-    # Add debug log to see if we reach here
-    state.push_log("debug", "DEBUG: About to call tui.setup()")
     tui.setup(stdscr)
-    state.push_log("debug", "DEBUG: tui.setup() complete")
 
     state.push_log("system", "━━━ Jerry ━━━")
     state.push_log("system", f"Workspace: {JERRY_BASE}")

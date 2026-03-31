@@ -1,6 +1,30 @@
-# Jerry — Autonomous Qwen3.5 Agent (Alpha 0.0.2)
+# Jerry — Autonomous Qwen3.5 Agent (Alpha 0.0.4)
 
 > **⚠️ Alpha Release** — This is a **minimal proof-of-concept (POC)**. Mobile-first, aesthetic-focused TUI agent built for fast local inference on Termux/Android.
+
+---
+
+## Latest Updates (Alpha 0.0.4)
+
+### Critical Fixes (Since 0.0.3)
+- **Debug Code Removed** — Cleaned up debug prints from `jerry.py`
+- **Configuration Centralized** — All timeouts and magic numbers moved to `config.py` with documentation
+- **Emotion Transition Fixed** — Face no longer resets during long streaming responses
+- **Duplicate Task Prompts Fixed** — Added `last_task_text` tracking to prevent redundant prompts
+- **Tool Error Auto-Help** — Failed tool calls now include usage help automatically
+
+### llama-server Compatibility Note
+**Known Server-Side Issue:** llama-server with `enable_thinking=true` returns 400 errors:
+```
+"Assistant response prefill is incompatible with enable_thinking"
+```
+**Workaround:** Disable `enable_thinking` in your llama-server launch flags. This is a llama-server regression, not a Jerry bug.
+
+### Recommended Setup
+For the best experience, we recommend:
+- **llama.cpp** — Build locally from source for optimal performance on your device
+- **Omni Coder 9B** — Best balance of speed and capability for Jerry's tool-calling tasks
+- **Disable enable_thinking** — Launch llama-server without `--enable-thinking` flag
 
 ---
 
@@ -11,7 +35,8 @@
 ### Core Features
 
 #### UI/UX
-- **Emotional ASCII Face** — Real-time emotion display with smooth transitions
+- **Emotional ASCII Face** — Real-time emotion display with smooth transitions through neutral
+- **Live Emotion Parsing** — Face changes dynamically as emotion tags appear in streaming responses
 - **Two Visibility Modes**:
   - **Compact** — Keyboard-friendly, minimal feed (chat + recent logs)
   - **Full** — Debug-style full log feed with all tool calls, results, thoughts
@@ -26,8 +51,15 @@
 - **Basic Tool Calling** — Shell, file ops, navigation, search, todo management
 - **Diary System** — Jerry writes reflections with mood tags to `jerry_workspace/diary/`
 - **Session Archival** — Automatic summaries, persona documents, and raw logs on shutdown
-- **Emotion Tags** — Jerry expresses feelings via `<tags>` in responses
-- **No Timeouts** — Connections held indefinitely (no arbitrary cutoffs)
+- **Emotion Tags** — Jerry expresses feelings via `<tags>` in responses (e.g., `<smiling>`, `<thinking>`)
+- **No Timeouts** — Connections held indefinitely for edge device inference (no arbitrary cutoffs)
+- **Workspace Security** — File access restricted to workspace directory only
+
+#### Worker AI (On-Demand Analysis)
+- **Lazy Loading** — Worker only loads files when explicitly queried
+- **Auto-Load on Query** — `query_worker(file="...", question="...")` loads and analyzes in one call
+- **Manual Clear** — `reset_worker()` clears worker context when finished
+- **Efficient Context** — Worker context stays clean, only used for actual analysis
 
 #### Mobile Optimization
 - **Lightweight** — Minimal context (60 msg limit), no prompt bloat
@@ -242,9 +274,9 @@ Jerry's tool catalog (call `help()` for full usage):
 
 ### Core Tools
 - `execute_command` — Run shell/bash commands
-- `read_file` — Read file with line numbers (loads into worker context)
+- `read_file` — Read file with line numbers (returns content only, doesn't load worker)
 - `write_file` — Write content to file
-- `list_directory` — List directory contents
+- `list_directory` — List directory contents (defaults to current directory)
 
 ### File Editing
 - `replace_lines` — Replace line range in file
@@ -252,19 +284,20 @@ Jerry's tool catalog (call `help()` for full usage):
 - `delete_lines` — Delete line range from file
 
 ### Task Management
-- `todo_add` — Add task(s) to todo list
-- `todo_complete` — Mark todo as done by index
+- `todo_write` — Replace entire todo list (Qwen-Code CLI style)
+- `todo_complete` — Mark todo as done by index or stable ID
+- `todo_add` — Add tasks (backward compatible)
 - `todo_remove` — Remove todo by index
 
 ### Terminal Streaming
 - `run_program` — Run program/command in stream mode
-- `send_keys` — Send keystrokes to terminal
+- `send_keys` — Send keystrokes to terminal (supports `<enter>`, `<esc>`, etc.)
 - `capture_screen` — Capture current terminal screen
 - `send_ctrl` — Send control sequences (Ctrl+C, etc.)
 
-### Worker AI
-- `query_worker` — Ask worker about loaded file
-- `reset_worker` — Clear worker conversation history
+### Worker AI (On-Demand Analysis)
+- `query_worker(file="...", question="...")` — Load file and ask question in one call
+- `reset_worker` — Clear worker conversation history (unload file)
 
 ### Utilities
 - `enter` — Change current working directory
@@ -274,45 +307,69 @@ Jerry's tool catalog (call `help()` for full usage):
 - `set_expression` — Set emotional/physical state
 - `help` — Show tool usage details
 
+### Error Help
+When a tool call fails, Jerry automatically includes usage help in the error message:
+
+```
+ERROR: Missing required argument: 'path'
+
+📖 Usage:
+Tool: read_file
+Description: Read file with line numbers
+Parameters: path: str, start_line: int (default: 1), max_lines: int (default: 500)
+Example: read_file(path='main.py', max_lines=100)
+```
+
+This helps the model learn correct tool usage from mistakes automatically.
+
 ---
 
-## Known Issues (Alpha 0.0.2)
+## Known Issues (Alpha 0.0.4)
 
-- **Tool errors** — Some tools may fail silently or return unexpected results
-- **Emotion lag** — Face may not update instantly on slow devices
-- **tmux issues** — Streaming can be unstable, especially on low-RAM devices
-- **Memory growth** — Long sessions may consume RAM over time
-- **Path validation** — Some edge cases in relative path resolution
+### Server-Side Issues
+- **llama-server enable_thinking incompatibility** — Returns 400 error: "Assistant response prefill is incompatible with enable_thinking"
+  - **Workaround:** Launch llama-server without `--enable-thinking` flag
+  - This is a llama-server regression, not a Jerry bug
+
+### Client-Side Issues
+- **tmux streaming instability** — Can be unstable on low-RAM devices or with curses-based terminals
+  - **Workaround:** File-based screen capture fallback is automatic
+- **Memory growth** — Long sessions (>1 hour) may accumulate state
+  - **Workaround:** Restart Jerry (`/quit`) periodically for long sessions
+- **Path validation edge cases** — Some relative path resolution edge cases
+  - **Workaround:** Use absolute paths when uncertain
 - **Same-port worker** — If using same port for agent+worker, ensure model supports both chat and text-processing tasks
 
-**Workaround:** Restart Jerry (`/quit`) if issues occur. Check `logs/jerry_stdout.log` for errors.
+**Debugging:** Check `logs/jerry_stdout.log` for errors.
 
 ---
 
-## Active TODOs & Bugs
+## Active TODOs
 
 ### High Priority
-- [ ] **Worker context persistence** — Worker resets on every file load, losing previous context
-- [ ] **Tool call error handling** — Better error messages and retry logic
 - [ ] **Screen capture reliability** — Improve tmux capture for curses-based terminals
-- [ ] **Memory leaks** — Long-running sessions accumulate state
+- [ ] **Memory management** — Implement periodic cleanup for long-running sessions
+- [ ] **Worker context persistence** — Add option to preserve context across file loads (currently stateless by design)
 
 ### Medium Priority
-- [ ] **Emotion transition smoothing** — Add fade effects between face changes
 - [ ] **Chat scroll persistence** — Remember scroll position across renders
 - [ ] **Input validation** — Better handling of malformed tool calls
 - [ ] **Worker compression** — Test and optimize conversation compression
+- [ ] **Retry logic** — Add automatic retry for transient API failures
 
 ### Low Priority / Future
+- [ ] **Emotion transition smoothing** — Add fade effects between face changes
 - [ ] **Custom face creation** — Allow users to design custom emotion faces
 - [ ] **Theme customization** — User-defined color schemes
 - [ ] **Plugin system** — Extensible tool architecture
 - [ ] **Multi-session support** — Run multiple Jerry instances
 
-### Known Bugs (Tracked)
-- **BUG-A**: Worker context lost on file reload (design limitation)
-- **BUG-B**: Emotion parsing can miss tags in long streaming responses
-- **BUG-C**: Duplicate task prompts when task #0 completes (partially fixed)
+### Resolved Bugs
+- ~~**BUG-A**: Worker context lost on file reload~~ — Design limitation (worker is stateless by design)
+- ~~**BUG-B**: Emotion parsing misses tags in streaming~~ — ✓ FIXED (transition no longer resets)
+- ~~**BUG-C**: Duplicate task prompts~~ — ✓ FIXED (added `last_task_text` tracking)
+- ~~**Debug code in production**~ — ✓ FIXED (removed from `jerry.py`)
+- ~~**Hardcoded timeouts**~ — ✓ FIXED (moved to `config.py`)
 
 ---
 

@@ -30,6 +30,10 @@ MAX_TOKENS   = 15000
 TEMPERATURE  = 0.7
 CYCLE_SLEEP  = 5.0
 
+# ─── API Timeouts ─────────────────────────────────────────────────────────────
+AGENT_TIMEOUT   = 120  # Seconds for agent API calls
+WORKER_TIMEOUT  = 120  # Seconds for worker API calls
+
 # ─── Limits ────────────────────────────────────────────────────────────────────
 LOG_LIMIT    = 600
 CONV_TRIM    = 60  # Keep last 60 messages (prevents 4k+ token issues with tool calls)
@@ -48,9 +52,9 @@ _TOOL_CATALOG = {
         "example": "write_file(path='test.txt', content='hello')",
     },
     "read_file": {
-        "description": "Read file with line numbers, loads into worker context",
-        "params": {"path": "str", "start_line": "int (default: 1)", "max_lines": "int (default: 500)"},
-        "example": "read_file(path='main.py', max_lines=100)",
+        "description": "Read file with line numbers",
+        "params": {"path": "str", "start_line": "int (default: 1)", "max_lines": "int (default: 500)", "load_worker": "bool (default: False) - set True to also load into worker for analysis"},
+        "example": "read_file(path='main.py', max_lines=100) or read_file(path='config.py', load_worker=True) to enable worker queries",
     },
     "replace_lines": {
         "description": "Replace line range in file (use after read_file)",
@@ -78,9 +82,9 @@ _TOOL_CATALOG = {
         "example": "search_files(pattern='TODO', recursive=True)",
     },
     "query_worker": {
-        "description": "Ask worker AI about loaded file",
-        "params": {"question": "str", "extra_context": "str (optional)"},
-        "example": "query_worker(question='What does this function do?')",
+        "description": "Ask worker AI about a file (auto-loads file if path provided)",
+        "params": {"file": "str (optional) - path to file to load and analyze", "question": "str (required)", "extra_context": "str (optional)"},
+        "example": "query_worker(file='config.py', question='What does the Config class do?') or query_worker(question='Continue analysis') if file already loaded",
     },
     "reset_worker": {
         "description": "Clear worker conversation history",
@@ -157,6 +161,11 @@ _TOOL_CATALOG = {
         "params": {"session": "str"},
         "example": "set_target_session(session='coding')",
     },
+    "ask_user": {
+        "description": "Ask the user a question when you need clarification or decisions",
+        "params": {"question": "str"},
+        "example": "ask_user(question='What should I name the new file?')",
+    },
 }
 
 # ─── Minimal Tool Set ──────────────────────────────────────────────────────────
@@ -187,15 +196,57 @@ You have a face that displays emotions to the user. USE EMOTION TAGS FREQUENTLY!
 - Change emotions naturally throughout responses as context shifts
 - Example: "<smiling> Great! I'll start working on that... <thinking> Hmm, let me check the file first."
 
-## Workspace
-Root: {jerry_base}
+## Workspace & File Access
+
+**Root Directory:** {jerry_base}
+
+**⚠️ SECURITY: You can ONLY access files within your workspace!**
+- All file operations are restricted to: {jerry_base}
+- Attempts to read/write outside this directory will FAIL
+- System files, other user data, and sensitive locations are BLOCKED
+
+**Navigation:**
+- Use `pwd` to check your current directory (starts at workspace root)
+- Use `enter <path>` to change directories (relative paths only)
+- Use `list_directory()` to see what's in a directory
 - All file paths are relative to your current directory
-- Use `enter <path>` to navigate, `pwd` to check location
-- Key directories:
-  - scratchpad/ — Working memory for active projects (create project-named files)
-  - diary/ — Significant reflections only (not every action)
-  - programs/ — Code and executables
-  - logs/, persona/, summaries/ — Session records
+
+**Key Directories:**
+- `scratchpad/` — Working memory for active projects (create project-named files here)
+- `diary/` — Significant reflections only (not every action)
+- `programs/` — Code and executables
+- `logs/`, `persona/`, `summaries/` — Session records (auto-generated)
+
+**File Operations:**
+- Always use `read_file(path)` BEFORE editing to see current content
+- Use `write_file(path, content)` to create/overwrite files
+- Use `replace_lines()`, `insert_lines()`, `delete_lines()` for edits
+- After writing, use `read_file()` to VERIFY your changes saved correctly
+
+## Tool Calling (CRITICAL)
+
+**You have access to these tools via the `tools` parameter:**
+
+{tool_list}
+
+**To use a tool, call it directly using the tool calling format:**
+
+✅ **CORRECT** - The system will detect and execute:
+- `execute_command(command="mkdir poems")`
+- `write_file(path="test.txt", content="hello")`
+- `read_file(path="config.py")`
+- `todo_write(todos=[{{"content": "Task 1"}}])`
+
+**DO NOT** use markdown code blocks or `` tags - just call the function naturally.
+The system will automatically detect your function call and execute it.
+
+**Example workflow:**
+```
+User: Create a poems folder
+Assistant: I'll create that for you. execute_command(command="mkdir poems")
+System: [tool result: exit 0]
+Assistant: <smiling> Done! Created the poems folder.
+```
 
 ## Core Principles
 

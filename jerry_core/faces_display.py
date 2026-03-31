@@ -75,46 +75,52 @@ class FaceDisplay:
 
     def set_emotion(self, emotion: str):
         """Set target emotion. Will transition through neutral first.
-        
+
         Args:
             emotion: Emotion name (e.g., 'happy', 'sad', 'neutral')
         """
         # Map emotion to face file name
         face_name = EMOTION_MAP.get(emotion.lower(), emotion.lower())
-        
+
         # Check if this face exists
         if face_name not in self.faces:
             return
-        
+
         # If already at this emotion, no transition needed
         if face_name == self.current_emotion and not self.in_transition:
             return
-        
-        # Start transition
+
+        # If already in transition, just update target (don't reset stage)
+        # This prevents rapid emotion changes from keeping face stuck on neutral
+        if self.in_transition:
+            self.target_emotion = face_name
+            return
+
+        # Start new transition
         self.target_emotion = face_name
         self.in_transition = True
         self.transition_stage = 1  # Start by going to neutral
 
     def parse_emotion_tags(self, text: str) -> str:
         """Parse emotion tags from text and set emotion accordingly.
-        
+
         Args:
             text: Text that may contain <emotion> tags
-            
+
         Returns:
             Text with emotion tags removed
         """
         import re
-        
+
         # Find all emotion tags
         tags = re.findall(r'<(\w+)>', text.lower())
-        
+
         if tags:
             # Use the last emotion tag found
             last_tag = tags[-1]
             if last_tag in EMOTION_MAP or last_tag in self.faces:
                 self.set_emotion(last_tag)
-        
+
         # Remove all emotion tags from text
         clean_text = re.sub(r'<\w+>', '', text)
         return clean_text

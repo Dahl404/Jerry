@@ -1,0 +1,12 @@
+# Ultra-minimal tool definitions - only help has full params
+TOOLS = [
+    {"type": "function", "function": {"name": "help", "description": "Get tool info. Call help() for list, help(tool) for details.", "parameters": {"type": "object", "properties": {"tool_name": {"type": "string"}}, "required": []}}},
+    {"type": "function", "function": {"name": "execute_command", "description": "Run shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string", "description": "Full command as single string, e.g., 'ls -la'"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "read_file", "description": "Read file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "write_file", "description": "Write file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+    {"type": "function", "function": {"name": "list_directory", "description": "List directory.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}}},
+    {"type": "function", "function": {"name": "todo_add", "description": "Add todo(s). Pass single task or array of tasks.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}, "tasks": {"type": "array", "items": {"type": "string"}}, "priority": {"type": "string"}}, "required": []}}},
+    {"type": "function", "function": {"name": "todo_complete", "description": "Complete todo by index (default: 0) or stable id.", "parameters": {"type": "object", "properties": {"index": {"type": "integer", "description": "Positional index (0-based). Default behaviour: pass 0 for first item."}, "id": {"type": "integer", "description": "Stable todo id (preferred when calling add+complete in same turn)."}}, "required": []}}},
+    {"type": "function", "function": {"name": "send_keys", "description": "Send keystrokes.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}},
+    {"type": "function", "function": {"name": "run_program", "description": "Run program in stream.", "parameters": {"type": "object", "properties": {"command": {"type": "string", "description": "Full command as single string, e.g., 'python game.py'"}}, "required": ["command"]}}},
+]

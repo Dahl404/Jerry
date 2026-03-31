@@ -61,7 +61,10 @@ class Executor:
         try:
             result = self._dispatch(name, args)
         except Exception as e:
-            result = f"ERROR: {e}"
+            # Include help output for the tool that failed
+            error_msg = f"ERROR: {e}"
+            help_text = self._get_tool_help(name)
+            result = f"{error_msg}\n\n📖 Usage:\n{help_text}"
             self.state.push_log("error", str(e)[:300])
         display = str(result)
         self.state.push_log("result", display[:500])
@@ -92,7 +95,7 @@ class Executor:
                 path = os.path.join(self.cwd, path)
             cmd = f"grep {fl} {a['pattern']!r} {path!r}"
             return self._sh(cmd)
-        elif name == "query_worker":         return self.worker.query(a["question"], a.get("extra_context", ""))
+        elif name == "query_worker":         return self._query_worker(a.get("file"), a["question"], a.get("extra_context", ""))
         elif name == "reset_worker":         self.worker.reset(); return "Worker context cleared."
         elif name == "todo_write":           return self._todo_write(a.get("todos"))
         elif name == "todo_add":             return self._todo_write(_convert_add_to_write(a))  # Backward compat
@@ -109,6 +112,12 @@ class Executor:
         elif name == "get_terminal_info":    return self._get_terminal_info()
         elif name == "set_target_session":   return self._set_target_session(a["session"])
         elif name == "run_program":           return self._run_program(a["command"], a.get("session", "jerry-control"))
+        # Question tool
+        elif name == "ask_user":             return self._ask_user(a["question"])
+        # Coin/reward system tools (Jerry CAN use these)
+        elif name == "check_coins":          return self._check_coins()
+        elif name == "offer_coins":          return self._offer_coins(a.get("amount", 0), a.get("reason", ""))
+        # NOTE: 'praise' is USER-ONLY via /praise command, not a tool Jerry can call
         else:
             return f"Unknown tool: {name}"
 
@@ -175,7 +184,7 @@ class Executor:
     def _help(self, tool_name: Optional[str] = None) -> str:
         """Return information about available tools."""
         catalog = get_tool_catalog()
-        
+
         if tool_name:
             # Return specific tool info
             if tool_name in catalog:
@@ -203,6 +212,21 @@ class Executor:
                 lines.append("")
             return "\n".join(lines)
 
+    def _get_tool_help(self, tool_name: str) -> str:
+        """Get concise help for a specific tool (for error messages)."""
+        catalog = get_tool_catalog()
+        if tool_name not in catalog:
+            return f"Unknown tool: {tool_name}"
+        
+        tool = catalog[tool_name]
+        params = ", ".join(f"{k}: {v}" for k, v in tool["params"].items()) or "none"
+        return (
+            f"Tool: {tool_name}\n"
+            f"Description: {tool['description']}\n"
+            f"Parameters: {params}\n"
+            f"Example: {tool['example']}"
+        )
+
     # ── File write ─────────────────────────────────────────────────────────────
     def _write(self, path: str, content: str) -> str:
         is_valid, abs_path, error = self._validate_path(path)
@@ -218,7 +242,7 @@ class Executor:
         except Exception as e:
             return f"ERROR: {e}"
 
-    # ── File read (loads into worker) ──────────────────────────────────────────
+    # ── File read (returns content only, worker loaded on query) ──────────────
     def _read(self, path: str, start: int, maxl: int) -> str:
         is_valid, abs_path, error = self._validate_path(path)
         if not is_valid:
@@ -235,8 +259,6 @@ class Executor:
             numbered = "".join(
                 f"{str(start + i).rjust(w)} │ {ln}" for i, ln in enumerate(chunk)
             )
-            # Load into worker
-            self.worker.load(abs_path, numbered)
             note = f"\n[Lines {start}–{end} of {total} total]"
             return numbered + note
         except Exception as e:
@@ -404,6 +426,28 @@ class Executor:
                         return f"✓ Completed task #{todo.id}: {todo.text}"
                 
                 return "✓ All tasks already complete!"
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    # ── Worker Query (auto-loads file if specified) ───────────────────────────
+    def _query_worker(self, file: Optional[str], question: str, extra: str = "") -> str:
+        """Query worker about a file. Auto-loads file if path provided."""
+        try:
+            # If file path provided, load it into worker first
+            if file:
+                is_valid, abs_path, error = self._validate_path(file)
+                if not is_valid:
+                    return error
+                if not os.path.exists(abs_path):
+                    return f"ERROR: File not found: {file}"
+                
+                # Read and load file
+                with open(abs_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.worker.load(abs_path, content)
+            
+            # Query the worker
+            return self.worker.query(question, extra)
         except Exception as e:
             return f"ERROR: {e}"
 
@@ -643,3 +687,63 @@ class Executor:
         except Exception as e:
             self.state.disable_stream_mode()
             return f"ERROR running program: {e}"
+
+    def _ask_user(self, question: str) -> str:
+        """Ask the user a question. Blocks until user responds.
+        
+        This tool pauses Jerry's autonomous loop to wait for user input.
+        Use when you need clarification, decisions, or additional context.
+        """
+        self.state.push_log("info", f"❓ Jerry asks: {question}")
+        
+        # Push question to chat display
+        self.state.push_chat("dao", f"❓ {question}", expression="questioning")
+        
+        # Set status to waiting
+        self.state.set_status("waiting for answer...")
+        
+        # Return message - the actual waiting happens in the main loop
+        return f"Waiting for user to answer: {question}"
+
+    def _check_coins(self) -> str:
+        """Check Jerry's current coin balance."""
+        coins = self.state.get_coins()
+        return f"🪙 Jerry has {coins} coins"
+
+    def _offer_coins(self, amount: int, reason: str) -> str:
+        """Offer coins to user in exchange for permission or help.
+        
+        This creates a negotiation request. User can accept or decline.
+        Coins are only deducted if user accepts.
+        """
+        current_coins = self.state.get_coins()
+        
+        if amount <= 0:
+            return "❌ Must offer at least 1 coin"
+        
+        if amount > current_coins:
+            return f"❌ Not enough coins! Jerry has {current_coins}, trying to offer {amount}"
+        
+        # Log the offer (coins not deducted yet - waiting for user acceptance)
+        self.state.push_log("info", f"💰 Jerry offers {amount} coins: {reason}")
+        self.state.push_chat("dao", f"💰 I'll offer you {amount} coins if you let me: {reason}", expression="smiling")
+        
+        return f"💰 Offered {amount} coins to user: {reason} (waiting for acceptance...)"
+
+    def _praise(self, reason: str) -> str:
+        """Praise/reward Jerry for a job well done.
+        
+        This is a USER-ONLY tool - Jerry can't call this on himself.
+        Awards coins as a reward.
+        """
+        # Award 5-10 coins based on praise length/enthusiasm
+        base_coins = 5
+        bonus = min(5, len(reason) // 20)  # Up to 5 bonus coins for detailed praise
+        total_coins = base_coins + bonus
+        
+        self.state.add_coins(total_coins, reason)
+        
+        # Show happy face
+        self.state.push_chat("dao", f"🪙 *blushes happily* Thank you! {reason}", expression="smiling")
+        
+        return f"🪙 Jerry earned {total_coins} coins! (Total: {self.state.get_coins()})"

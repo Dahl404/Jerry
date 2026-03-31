@@ -23,4 +23,10 @@ TOOLS = [
     {"type": "function", "function": {"name": "pwd", "description": "Show current directory.", "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {"name": "capture_screen", "description": "Capture terminal screen.", "parameters": {"type": "object", "properties": {"lines": {"type": "integer"}}, "required": []}}},
     {"type": "function", "function": {"name": "send_ctrl", "description": "Send Ctrl+key sequence.", "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}}},
+    # Question tool for user interaction (Qwen-Code CLI style)
+    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a question when you need clarification, input, or decisions. Use this instead of guessing.", "parameters": {"type": "object", "properties": {"question": {"type": "string", "description": "The question to ask the user"}}, "required": ["question"]}}},
+    # Coin/reward system tools (Jerry CAN use these)
+    {"type": "function", "function": {"name": "check_coins", "description": "Check Jerry's current coin balance", "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {"name": "offer_coins", "description": "Offer coins to user in exchange for permission or help", "parameters": {"type": "object", "properties": {"amount": {"type": "integer", "description": "Number of coins to offer"}, "reason": {"type": "string", "description": "What Jerry wants permission for"}}, "required": ["amount", "reason"]}}},
+    # NOTE: 'praise' tool removed - users praise Jerry via /praise command, not through AI
 ]

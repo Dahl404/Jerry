@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(true)",
+      "Bash(python3 *)",
+      "Bash(tmux *)",
+      "Bash(command *)",
+      "Bash(unzip *)",
+      "Bash(diff *)",
+      "Bash(head *)",
+      "Bash(sed *)",
+      "Bash(mv *)"
+    ]
+  },
+  "$version": 3
+}

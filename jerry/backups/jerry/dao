@@ -1,0 +1,8 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Dao Launcher Script
+# Automatically starts tmux and runs Dao inside it
+
+SCRIPT_DIR="/data/data/com.termux/files/home/dao"
+
+cd "$SCRIPT_DIR"
+python3 run.py

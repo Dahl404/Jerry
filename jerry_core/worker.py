@@ -3,7 +3,7 @@
 
 import requests
 from typing import Dict, List
-from .config import WORKER_URL
+from .config import WORKER_URL, WORKER_TIMEOUT
 from .models import State
 
 # Maximum number of messages kept in the worker's rolling history.
@@ -110,7 +110,7 @@ Keep it under 200 words. Preserve essential context but remove redundancy."""
             r = requests.post(
                 WORKER_URL,
                 json={"messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.3},
-                timeout=60,
+                timeout=WORKER_TIMEOUT,
             )
             r.raise_for_status()
             data = r.json()
@@ -131,7 +131,7 @@ Keep it under 200 words. Preserve essential context but remove redundancy."""
             r = requests.post(
                 WORKER_URL,
                 json={"messages": self.hist, "max_tokens": 2048, "temperature": 0.2},
-                timeout=120,
+                timeout=WORKER_TIMEOUT,
             )
             r.raise_for_status()
             data = r.json()

@@ -1,0 +1,14 @@
+PHASE 1: Poem Creation - Planning Phase
+=========================================
+
+Goal: Create a poems directory and write a poem using nvim
+
+Tasks:
+1. Create poems directory at documents/poems
+2. Launch nvim editor with new file
+3. Type a poem in insert mode
+4. Exit insert mode (escape key)
+5. Save and quit nvim (:wq)
+6. Verify file was saved
+
+[PLANNING COMPLETE]

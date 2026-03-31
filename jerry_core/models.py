@@ -74,6 +74,9 @@ class State:
         # Current working directory — kept in sync with Executor.cwd so the
         # agent can always inject it into API messages without reading executor directly.
         self.cwd: str = JERRY_BASE
+        # Coin/reward system
+        self.coins: int = 0  # Jerry's coin balance
+        self.coin_history: List[Dict] = []  # Track coin transactions
 
     # ── Screen callback registration ───────────────────────────────────────────
     def set_screen_callback(self, callback):
@@ -221,6 +224,43 @@ class State:
     def set_local_files(self, files: List[str]):
         with self._lock:
             self.local_files = files
+
+    # ── Coin/Reward System ─────────────────────────────────────────────────────
+    def add_coins(self, amount: int, reason: str = ""):
+        """Add coins to Jerry's balance (user praise/reward)."""
+        with self._lock:
+            self.coins += amount
+            self.coin_history.append({
+                "type": "earn",
+                "amount": amount,
+                "balance": self.coins,
+                "reason": reason,
+                "ts": ts(),
+            })
+            self.push_log("info", f"🪙 Jerry earned {amount} coins! Total: {self.coins}")
+
+    def spend_coins(self, amount: int, reason: str = "") -> bool:
+        """Try to spend coins. Returns True if successful."""
+        with self._lock:
+            if self.coins >= amount:
+                self.coins -= amount
+                self.coin_history.append({
+                    "type": "spend",
+                    "amount": -amount,
+                    "balance": self.coins,
+                    "reason": reason,
+                    "ts": ts(),
+                })
+                self.push_log("info", f"💰 Jerry spent {amount} coins. Remaining: {self.coins}")
+                return True
+            else:
+                self.push_log("error", f"❌ Not enough coins! Has {self.coins}, needs {amount}")
+                return False
+
+    def get_coins(self) -> int:
+        """Get current coin balance."""
+        with self._lock:
+            return self.coins
 
     # ── Snapshot for rendering ─────────────────────────────────────────────────
     def snapshot(self):

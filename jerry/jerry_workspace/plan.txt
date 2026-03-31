@@ -1,0 +1,10 @@
+PLAN: Play Missile Defense Game
+=================================
+
+1. Run the missile_defense.py game from programs/games directory
+2. Watch gameplay - likely need to use arrow keys to control a ship
+3. Defend against incoming missiles by shooting or moving
+4. Continue playing until game ends or user stops
+
+The game file is at: programs/games/missile_defense.py
+I'll run it and see what controls are needed.

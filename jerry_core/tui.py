@@ -429,7 +429,8 @@ class TUI:
         
         self.frame += 1
         
-        # Parse emotion tags from new messages for live updates
+        # Parse emotion tags from complete messages
+        # Live streaming emotion parsing happens in agent.py during token generation
         if self.face_enabled:
             self._parse_recent_emotions()
     
@@ -1974,6 +1975,8 @@ class TUI:
             self.state.push_log("info", "/theme [dark|light|auto]  toggle or set theme")
             self.state.push_log("info", "/face [show|hide] toggle face panel (default: show)")
             self.state.push_log("info", "/chat_threshold <n> full feed at N+ rows (default: 15)")
+            self.state.push_log("info", "/praise [reason]  reward Jerry with coins (default: 'Great job!')")
+            self.state.push_log("info", "/coins            check Jerry's coin balance")
             self.state.push_log("info", "/quit             exit jerry")
             self.state.push_log("info", "/inject <msg>     inject into agent stream")
             self.state.push_log("info", "──────────────────────────────────────────────")
@@ -2011,7 +2014,35 @@ class TUI:
                 # Toggle face: /face
                 self.face_enabled = not self.face_enabled
                 state_str = "enabled" if self.face_enabled else "disabled"
-                self.state.push_log("info", f"✓ Face panel {state_str}")
+
+        elif cmd == "praise":
+            # User praising Jerry: /praise [reason]
+            try:
+                reason = " ".join(parts[1:]) if len(parts) > 1 else "Great job!"
+                # Award 5-10 coins based on praise length
+                base_coins = 5
+                bonus = min(5, len(reason) // 20)
+                total_coins = base_coins + bonus
+                self.state.add_coins(total_coins, reason)
+                self.state.push_chat("dao", f"🪙 *blushes happily* Thank you! {reason}", expression="smiling")
+            except Exception as e:
+                self.state.push_log("error", f"Praise error: {e}")
+
+        elif cmd == "coins":
+            # Check Jerry's coin balance: /coins
+            try:
+                coins = self.state.get_coins()
+                self.state.push_log("info", f"🪙 Jerry has {coins} coins")
+                # Show recent coin history
+                if self.state.coin_history:
+                    self.state.push_log("info", "Recent transactions:")
+                    for tx in self.state.coin_history[-5:]:
+                        sign = "+" if tx["type"] == "earn" else "-"
+                        self.state.push_log("info", f"  {sign}{abs(tx['amount'])} - {tx['reason'][:40]} (balance: {tx['balance']})")
+                else:
+                    self.state.push_log("info", "No transactions yet. Use /praise to reward Jerry!")
+            except Exception as e:
+                self.state.push_log("error", f"Coins error: {e}")
 
         elif cmd == "chat_threshold":
             if len(parts) > 1:
