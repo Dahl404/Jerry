@@ -30,10 +30,14 @@ class Worker:
         self.hist = []
         with self.state._lock:
             self.state.wfile = None
+            self.state.wfiles = []  # Track multiple files
         self.state.push_log("worker", "Worker context cleared.")
 
     def load(self, path: str, content: str) -> str:
-        """Load a file (line-numbered) into worker context."""
+        """Load a file (line-numbered) into worker context.
+        
+        This REPLACES any previously loaded files. For multiple files, use load_multiple().
+        """
         line_count = content.count("\n") + 1
         self.hist = [{
             "role": "user",
@@ -49,10 +53,55 @@ class Worker:
         }]
         with self.state._lock:
             self.state.wfile = path
+            self.state.wfiles = [path]
         resp = self._call()
         self.hist.append({"role": "assistant", "content": resp})
         self.state.push_log("worker", f"Loaded: {path}  ({line_count} lines)")
         return resp
+
+    def load_multiple(self, files: List[tuple]) -> str:
+        """Load multiple files into worker context without resetting.
+        
+        Args:
+            files: List of (path, content) tuples
+        
+        Returns:
+            Confirmation message
+        """
+        if not files:
+            return "No files to load"
+        
+        # Build multi-file prompt
+        file_contents = []
+        file_list = []
+        for path, content in files:
+            line_count = content.count("\n") + 1
+            file_list.append(f"- {path} ({line_count} lines)")
+            file_contents.append(f"### File: {path}\n\n```\n{content}\n```\n")
+        
+        combined_content = "\n\n".join(file_contents)
+        file_list_str = "\n".join(file_list)
+        
+        self.hist = [{
+            "role": "user",
+            "content": (
+                f"You are a text-processing and code analysis assistant.\n"
+                f"Multiple files have been loaded for cross-file analysis.\n\n"
+                f"**Loaded Files:**\n{file_list_str}\n\n"
+                f"{combined_content}\n\n"
+                f"Please acknowledge receipt and describe the relationship between these files. "
+                f"Then wait for questions."
+            ),
+        }]
+        
+        with self.state._lock:
+            self.state.wfile = files[0][0]  # Set first as primary
+            self.state.wfiles = [f[0] for f in files]  # Track all loaded files
+        
+        resp = self._call()
+        self.hist.append({"role": "assistant", "content": resp})
+        self.state.push_log("worker", f"Loaded {len(files)} files: {', '.join(f[0] for f in files)}")
+        return f"Loaded {len(files)} files into worker context"
 
     def query(self, question: str, extra: str = "") -> str:
         """Ask the worker a question about the loaded file."""

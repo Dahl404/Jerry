@@ -28,5 +28,7 @@ TOOLS = [
     # Coin/reward system tools (Jerry CAN use these)
     {"type": "function", "function": {"name": "check_coins", "description": "Check Jerry's current coin balance", "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {"name": "offer_coins", "description": "Offer coins to user in exchange for permission or help", "parameters": {"type": "object", "properties": {"amount": {"type": "integer", "description": "Number of coins to offer"}, "reason": {"type": "string", "description": "What Jerry wants permission for"}}, "required": ["amount", "reason"]}}},
+    # Multi-file worker support
+    {"type": "function", "function": {"name": "load_multiple_files", "description": "Load multiple files into worker context for cross-file analysis", "parameters": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, "description": "Array of {path, content} objects"}}, "required": ["files"]}}},
     # NOTE: 'praise' tool removed - users praise Jerry via /praise command, not through AI
 ]

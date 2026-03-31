@@ -7,6 +7,7 @@ from datetime import datetime
 from collections import deque
 import itertools
 import threading
+import json
 
 from .config import LOG_LIMIT, RAW_LOG_LIMIT, JERRY_BASE
 
@@ -63,6 +64,7 @@ class State:
         self.inbox:  deque          = deque()
         self.quit:   bool           = False
         self.wfile:  Optional[str]  = None   # file currently loaded in worker
+        self.wfiles: List[str]     = []     # all files currently loaded in worker (multi-file support)
         self.expression: str = ""   # current expression state
         self.local_files: List[str] = []  # known local files
         self.session_start: str = datetime.now().isoformat()
@@ -77,6 +79,36 @@ class State:
         # Coin/reward system
         self.coins: int = 0  # Jerry's coin balance
         self.coin_history: List[Dict] = []  # Track coin transactions
+        self._load_coins()  # Load coins from file on startup
+
+    def _get_coins_file(self) -> str:
+        """Get path to coins persistence file."""
+        return os.path.join(JERRY_BASE, ".coins.json")
+
+    def _load_coins(self):
+        """Load coins from file on startup."""
+        try:
+            coins_file = self._get_coins_file()
+            if os.path.exists(coins_file):
+                with open(coins_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.coins = data.get("coins", 0)
+                    self.coin_history = data.get("history", [])
+        except Exception as e:
+            self.coins = 0
+            self.coin_history = []
+
+    def _save_coins(self):
+        """Save coins to file."""
+        try:
+            coins_file = self._get_coins_file()
+            with open(coins_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "coins": self.coins,
+                    "history": self.coin_history,
+                }, f, indent=2)
+        except Exception as e:
+            self.push_log("error", f"Failed to save coins: {e}")
 
     # ── Screen callback registration ───────────────────────────────────────────
     def set_screen_callback(self, callback):
@@ -237,6 +269,7 @@ class State:
                 "reason": reason,
                 "ts": ts(),
             })
+            self._save_coins()  # Persist to file
             self.push_log("info", f"🪙 Jerry earned {amount} coins! Total: {self.coins}")
 
     def spend_coins(self, amount: int, reason: str = "") -> bool:
@@ -251,6 +284,7 @@ class State:
                     "reason": reason,
                     "ts": ts(),
                 })
+                self._save_coins()  # Persist to file
                 self.push_log("info", f"💰 Jerry spent {amount} coins. Remaining: {self.coins}")
                 return True
             else:

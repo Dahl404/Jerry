@@ -166,6 +166,11 @@ _TOOL_CATALOG = {
         "params": {"question": "str"},
         "example": "ask_user(question='What should I name the new file?')",
     },
+    "load_multiple_files": {
+        "description": "Load multiple files into worker for cross-file analysis",
+        "params": {"files": "array of {path, content} objects"},
+        "example": "load_multiple_files(files=[{'path': 'a.py', 'content': '...'}, {'path': 'b.py', 'content': '...'}])",
+    },
 }
 
 # ─── Minimal Tool Set ──────────────────────────────────────────────────────────

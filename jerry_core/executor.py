@@ -117,6 +117,8 @@ class Executor:
         # Coin/reward system tools (Jerry CAN use these)
         elif name == "check_coins":          return self._check_coins()
         elif name == "offer_coins":          return self._offer_coins(a.get("amount", 0), a.get("reason", ""))
+        # Multi-file worker support
+        elif name == "load_multiple_files":  return self._load_multiple_files(a.get("files", []))
         # NOTE: 'praise' is USER-ONLY via /praise command, not a tool Jerry can call
         else:
             return f"Unknown tool: {name}"
@@ -747,3 +749,26 @@ class Executor:
         self.state.push_chat("dao", f"🪙 *blushes happily* Thank you! {reason}", expression="smiling")
         
         return f"🪙 Jerry earned {total_coins} coins! (Total: {self.state.get_coins()})"
+
+    def _load_multiple_files(self, files: list) -> str:
+        """Load multiple files into worker context for cross-file analysis.
+        
+        Args:
+            files: List of {path, content} dicts
+        
+        Returns:
+            Confirmation message
+        """
+        if not files:
+            return "❌ No files specified"
+        
+        try:
+            # Convert to list of (path, content) tuples
+            file_list = [(f["path"], f["content"]) for f in files]
+            
+            # Load into worker
+            result = self.worker.load_multiple(file_list)
+            
+            return f"✓ {result}"
+        except Exception as e:
+            return f"ERROR loading files: {e}"

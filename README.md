@@ -6,31 +6,62 @@
 
 ## Latest Updates (Alpha 0.0.4)
 
-### Critical Fixes (Since 0.0.3)
-- **Debug Code Removed** — Cleaned up debug prints from `jerry.py`
-- **Configuration Centralized** — All timeouts and magic numbers moved to `config.py` with documentation
-- **Emotion Transition Fixed** — Face no longer resets during long streaming responses
-- **Duplicate Task Prompts Fixed** — Added `last_task_text` tracking to prevent redundant prompts
-- **Tool Error Auto-Help** — Failed tool calls now include usage help automatically
+### 🪙 Coin/Reward System (NEW!)
+- **User Praise** — Use `/praise [reason]` to reward Jerry with 5-10 coins
+- **Coin Balance** — Check with `/coins` to see balance and transaction history
+- **Jerry Can Offer Coins** — New `offer_coins()` tool for negotiations
+- **Jerry Can Check Coins** — New `check_coins()` tool to see balance
+- **Coin Persistence** — Coins saved to `.coins.json`, persists across sessions!
+- **Barter System** — Jerry can offer coins for permissions or special requests
 
-### llama-server Compatibility Note
-**Known Server-Side Issue:** llama-server with `enable_thinking=true` returns 400 errors:
-```
-"Assistant response prefill is incompatible with enable_thinking"
-```
-**Workaround:** Disable `enable_thinking` in your llama-server launch flags. This is a llama-server regression, not a Jerry bug.
+### 📁 Multi-File Worker (NEW!)
+- **`load_multiple_files()`** — Load multiple files at once for cross-file analysis
+- **Worker Keeps Context** — Option to preserve context when loading multiple files
+- **Cross-File Analysis** — Worker can now compare and analyze multiple files together
+
+### 🔄 Continue Token Loop (Qwen-Code CLI Pattern)
+- **Always Uses `[continue]`** — Jerry gets continue prompt while tasks pending
+- **Loop Continues Until**:
+  1. Task complete (calls `todo_complete`)
+  2. User interrupts with new message
+  3. Jerry asks question (`ask_user` tool)
+- **No More Assistant-Replying-to-Assistant** — Fixed 400 errors from conversation format
+
+### ❓ Ask User Tool
+- **`ask_user(question)`** — Jerry can ask for clarification/decisions
+- **Blocks Until Answer** — Jerry waits for user response
+- **Shows Questioning Face** — Emotion matches the interaction
+
+### 🐛 Critical Fixes
+- **Tool Call Validation** — Generate IDs instead of filtering, prevents losing tool calls
+- **Break After Text Response** — Prevents 400 errors from assistant replying to assistant
+- **User Interrupt During Streaming** — Check inbox every iteration, not just at turn start
+- **Command Error Handling** — `/praise` and `/coins` now have try/catch
+
+### 📝 Documentation
+- **debug.md** — Documents 400 error root cause and fix
+- **clean.sh Updated** — Now properly cleans all workspace subdirectories
 
 ### Recommended Setup
 For the best experience, we recommend:
 - **llama.cpp** — Build locally from source for optimal performance on your device
-- **Omni Coder 9B** — Best balance of speed and capability for Jerry's tool-calling tasks
+- **Omni-Coder 9B** — **DEFAULT MODEL** — Best balance of speed and capability for Jerry's tool-calling tasks
 - **Disable enable_thinking** — Launch llama-server without `--enable-thinking` flag
+
+### Default Model Configuration
+```bash
+# Recommended: Omni-Coder 9B for tool-calling
+./llama-server --model models/omni-coder-9b.gguf --port 8080 --ctx-size 32768
+
+# Alternative: Qwen3.5 7B for faster inference
+./llama-server --model models/qwen3.5-7b.gguf --port 8080 --ctx-size 32768
+```
 
 ---
 
 ## What is Jerry?
 
-**Jerry** is an autonomous AI agent with an emotional ASCII face, designed to run **locally on mobile devices** (Termux/Android) with Qwen3.5 (or compatible) models. Jerry thinks, plans, executes tasks, and displays emotions in real-time — all while staying minimal and keyboard-friendly.
+**Jerry** is an autonomous AI agent with an emotional ASCII face, designed to run **locally on mobile devices** (Termux/Android) with Qwen3.5 or Omni-Coder 9B (or compatible) models. Jerry thinks, plans, executes tasks, and displays emotions in real-time — all while staying minimal and keyboard-friendly.
 
 ### Core Features
 
@@ -44,11 +75,14 @@ For the best experience, we recommend:
 - **Smooth Animations** — Loading bars, typing indicators, transition effects
 - **Face Panel Toggle** — Enable/disable with `/face show` or `/face hide`
 - **Chat Threshold** — Auto-switch modes based on available rows (default: 15)
+- **Coin/Reward Display** — Track Jerry's earnings and spending with `/coins`
 
 #### Agent Capabilities
 - **Autonomous Planning** — Creates todo lists with stable IDs, works independently
+- **Continue Token Loop** — Uses `[continue]` pattern (Qwen-Code CLI style)
 - **Parallel Message Injection** — Non-blocking operation with background agent thread
-- **Basic Tool Calling** — Shell, file ops, navigation, search, todo management
+- **Tool Calling** — Shell, file ops, navigation, search, todo management
+- **Ask User Questions** — `ask_user()` tool for clarification/decisions
 - **Diary System** — Jerry writes reflections with mood tags to `jerry_workspace/diary/`
 - **Session Archival** — Automatic summaries, persona documents, and raw logs on shutdown
 - **Emotion Tags** — Jerry expresses feelings via `<tags>` in responses (e.g., `<smiling>`, `<thinking>`)
@@ -58,12 +92,21 @@ For the best experience, we recommend:
 #### Worker AI (On-Demand Analysis)
 - **Lazy Loading** — Worker only loads files when explicitly queried
 - **Auto-Load on Query** — `query_worker(file="...", question="...")` loads and analyzes in one call
+- **Multi-File Loading** — `load_multiple_files()` loads multiple files at once
+- **Cross-File Analysis** — Worker can compare and analyze multiple files together
 - **Manual Clear** — `reset_worker()` clears worker context when finished
 - **Efficient Context** — Worker context stays clean, only used for actual analysis
 
+#### Coin/Reward System
+- **User Praise** — `/praise [reason]` awards 5-10 coins to Jerry
+- **Check Balance** — `/coins` shows current balance and transaction history
+- **Jerry Can Check** — `check_coins()` tool to see current balance
+- **Jerry Can Offer** — `offer_coins(amount, reason)` for negotiations
+- **Persistent Across Sessions** — Coins saved to `.coins.json` in workspace
+
 #### Mobile Optimization
 - **Lightweight** — Minimal context (60 msg limit), no prompt bloat
-- **Fast Local Inference** — Runs on-device with Qwen3.5 via llama.cpp/Ollama
+- **Fast Local Inference** — Runs on-device with Omni-Coder 9B / Qwen3.5 via llama.cpp/Ollama
 - **Keyboard-Friendly** — Arrow keys for scrolling, shortcuts, compact mode
 - **Location-Agnostic** — Relative path system, run from anywhere
 - **tmux Streaming** — Watch Jerry run programs live in real-time
@@ -327,15 +370,11 @@ This helps the model learn correct tool usage from mistakes automatically.
 ## Known Issues (Alpha 0.0.4)
 
 ### Server-Side Issues
-- **llama-server enable_thinking incompatibility** — Returns 400 error: "Assistant response prefill is incompatible with enable_thinking"
-  - **Workaround:** Launch llama-server without `--enable-thinking` flag
-  - This is a llama-server regression, not a Jerry bug
+- **None currently known** — Jerry is stable with llama.cpp/llama-server
 
 ### Client-Side Issues
 - **tmux streaming instability** — Can be unstable on low-RAM devices or with curses-based terminals
   - **Workaround:** File-based screen capture fallback is automatic
-- **Memory growth** — Long sessions (>1 hour) may accumulate state
-  - **Workaround:** Restart Jerry (`/quit`) periodically for long sessions
 - **Path validation edge cases** — Some relative path resolution edge cases
   - **Workaround:** Use absolute paths when uncertain
 - **Same-port worker** — If using same port for agent+worker, ensure model supports both chat and text-processing tasks
@@ -348,28 +387,32 @@ This helps the model learn correct tool usage from mistakes automatically.
 
 ### High Priority
 - [ ] **Screen capture reliability** — Improve tmux capture for curses-based terminals
-- [ ] **Memory management** — Implement periodic cleanup for long-running sessions
-- [ ] **Worker context persistence** — Add option to preserve context across file loads (currently stateless by design)
 
 ### Medium Priority
+- [ ] **Coin Spending System** — User acceptance/decline UI for coin offers
 - [ ] **Chat scroll persistence** — Remember scroll position across renders
 - [ ] **Input validation** — Better handling of malformed tool calls
-- [ ] **Worker compression** — Test and optimize conversation compression
-- [ ] **Retry logic** — Add automatic retry for transient API failures
 
 ### Low Priority / Future
-- [ ] **Emotion transition smoothing** — Add fade effects between face changes
+- [ ] **Coin Shop/Rewards** — What can Jerry buy with coins?
+  - Permission for risky commands
+  - New tools/features
+  - "Break time" (idle reflection)
+  - Extra API calls for complex tasks
+- [ ] **Achievements/Badges** — Milestone rewards for Jerry
 - [ ] **Custom face creation** — Allow users to design custom emotion faces
 - [ ] **Theme customization** — User-defined color schemes
 - [ ] **Plugin system** — Extensible tool architecture
 - [ ] **Multi-session support** — Run multiple Jerry instances
 
-### Resolved Bugs
-- ~~**BUG-A**: Worker context lost on file reload~~ — Design limitation (worker is stateless by design)
-- ~~**BUG-B**: Emotion parsing misses tags in streaming~~ — ✓ FIXED (transition no longer resets)
-- ~~**BUG-C**: Duplicate task prompts~~ — ✓ FIXED (added `last_task_text` tracking)
-- ~~**Debug code in production**~ — ✓ FIXED (removed from `jerry.py`)
-- ~~**Hardcoded timeouts**~ — ✓ FIXED (moved to `config.py`)
+### ✅ Recently Completed
+- ✓ **Coin Persistence** — Coins now saved to `.coins.json` across sessions
+- ✓ **Multi-File Worker** — `load_multiple_files()` for cross-file analysis
+- ✓ **Tool Call Validation** — Generate IDs instead of filtering
+- ✓ **400 Error Fix** — content="", break after text response
+- ✓ **User Interrupt** — Check inbox every streaming iteration
+- ✓ **Ask User Tool** — Jerry can ask questions
+- ✓ **Continue Token Loop** — Qwen-Code CLI pattern
 
 ---
 
