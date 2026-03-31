@@ -383,36 +383,60 @@ This helps the model learn correct tool usage from mistakes automatically.
 
 ---
 
-## Active TODOs
+## Roadmap
 
-### High Priority
-- [ ] **Screen capture reliability** — Improve tmux capture for curses-based terminals
+### ✅ Recently Completed (Alpha 0.0.4)
+- ✓ **Coin System** — Earn, track, and offer coins with persistence across sessions
+- ✓ **Multi-File Worker** — Load and analyze multiple files simultaneously
+- ✓ **Continue Token Loop** — Qwen-Code CLI pattern for autonomous work
+- ✓ **Ask User Tool** — Jerry can ask questions and wait for answers
+- ✓ **User Interrupt** — Messages immediately interrupt streaming
+- ✓ **400 Error Fixes** — Proper conversation format, tool call validation
+- ✓ **Auto-Help on Errors** — Failed tools include usage examples
 
-### Medium Priority
-- [ ] **Coin Spending System** — User acceptance/decline UI for coin offers
-- [ ] **Chat scroll persistence** — Remember scroll position across renders
-- [ ] **Input validation** — Better handling of malformed tool calls
+### 📍 Current Focus
+Jerry is **feature-complete for Alpha 0.0.4**. Current focus is on:
+- **Stability** — Bug fixes and edge case handling
+- **Performance** — Optimizing rendering and API calls
+- **User Experience** — Smooth interactions, better feedback
 
-### Low Priority / Future
-- [ ] **Coin Shop/Rewards** — What can Jerry buy with coins?
+### 🔮 Future Vision (Not Actively Developed)
+These are ideas for future versions — **not currently being worked on**:
+
+**Coin System Extensions:**
+- Coin spending UI (user accepts/declines offers)
+- "Coin shop" — What can Jerry buy?
   - Permission for risky commands
   - New tools/features
-  - "Break time" (idle reflection)
   - Extra API calls for complex tasks
-- [ ] **Achievements/Badges** — Milestone rewards for Jerry
-- [ ] **Custom face creation** — Allow users to design custom emotion faces
-- [ ] **Theme customization** — User-defined color schemes
-- [ ] **Plugin system** — Extensible tool architecture
-- [ ] **Multi-session support** — Run multiple Jerry instances
+- Achievements/badges for milestones
 
-### ✅ Recently Completed
-- ✓ **Coin Persistence** — Coins now saved to `.coins.json` across sessions
-- ✓ **Multi-File Worker** — `load_multiple_files()` for cross-file analysis
-- ✓ **Tool Call Validation** — Generate IDs instead of filtering
-- ✓ **400 Error Fix** — content="", break after text response
-- ✓ **User Interrupt** — Check inbox every streaming iteration
-- ✓ **Ask User Tool** — Jerry can ask questions
-- ✓ **Continue Token Loop** — Qwen-Code CLI pattern
+**UI Enhancements:**
+- Custom ASCII face creation
+- Theme customization
+- Emotion transition animations
+- Chat scroll persistence
+
+**Architecture:**
+- Plugin system for extensible tools
+- Multi-session support
+- C++ port for performance-critical code
+
+**AI Capabilities:**
+- RAG integration for long-term memory
+- Persistent memory across sessions
+- Multi-modal support (images, code screenshots)
+
+---
+
+## Known Limitations
+
+These are **by design** or **external constraints**:
+
+- **Worker is stateless** — Each `load()` replaces previous files (use `load_multiple_files()` for multi-file)
+- **tmux required for streaming** — No tmux = no screen capture/send_keys
+- **60 message context limit** — Prevents token overflow with tool calls
+- **Same-port default** — Agent and worker share port 8080 (configurable)
 
 ---
 
