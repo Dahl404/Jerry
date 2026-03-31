@@ -217,36 +217,6 @@ Jerry: <thinking> Let me check that file... <smiling> Found it!
 
 ---
 
-## Roadmap (Planned Features)
-
-### Near-Term
-- [ ] **Robust Tool Calling** — Expanded tool system with better error handling, retry logic
-- [ ] **Worker Improvements** — Single port (8080) or dual port (8080+8081) configuration
-- [ ] **Model Switching** — Hot-swap models at runtime via config or command
-- [ ] **Integrated Inference** — Bundle inference engine (llama.cpp) with Jerry
-- [ ] **Enhanced Screen Streaming** — More reliable tmux capture, better error recovery
-- [ ] **More Emotions** — Expanded emotion set, custom face creation
-- [ ] **Generative Emotion Panels** — Dynamic ASCII art based on context
-- [ ] **Better Animations** — Smooth transitions, visual polish, performance optimization
-
-### Future Vision
-- [ ] **C++ Port** — Convert performance-critical parts to C++ for speed
-- [ ] **RAG Integration** — Retrieval-augmented generation for long-term memory
-- [ ] **TTT-E2E** — Test-Time Training for end-to-end adaptation
-- [ ] **DISCOVER** — Autonomous exploration and learning capabilities
-- [ ] **Minor QLoRAs** — Continual adaptation via lightweight fine-tuning
-- [ ] **Persistent Memory** — Long-term knowledge retention across sessions
-- [ ] **Multi-Modal** — Image/code screenshot analysis
-
-### Core Goals
-- **Ease of Use** — Zero-config, works out of the box
-- **Fluidity** — Smooth UI, responsive interactions, no lag
-- **Speed** — Fast inference, minimal latency, efficient rendering
-- **Mobile-First** — Optimized for Termux/Android, low resource usage
-- **Minimal Bloat** — Lean context, efficient prompts, no token waste
-
----
-
 ## Project Structure
 
 ```
@@ -395,13 +365,17 @@ This helps the model learn correct tool usage from mistakes automatically.
 - ✓ **Auto-Help on Errors** — Failed tools include usage examples
 
 ### 📍 Current Focus
-Jerry is **feature-complete for Alpha 0.0.4**. Current focus is on:
-- **Stability** — Bug fixes and edge case handling
-- **Performance** — Optimizing rendering and API calls
-- **User Experience** — Smooth interactions, better feedback
+Jerry is **feature-complete for Alpha 0.0.4**. Current development priorities:
 
-### 🔮 Future Vision (Not Actively Developed)
-These are ideas for future versions — **not currently being worked on**:
+1. **Internet Search Tool** — Web search, fetch URLs, search capabilities (HIGH PRIORITY!)
+2. **Persistence** — Save/restore full session state (todos, conversation, context)
+3. **Long-Term Memory** — RAG-style retrieval for cross-session knowledge
+4. **Robust Terminal Streaming** — Better tmux capture, error recovery, non-tmux fallbacks
+5. **Multi-Modal Vision** — Native image/code screenshot analysis (model supports it!)
+6. **Dual-Model Support** — Optional smaller model for low-resource devices
+
+### 🔮 Future Ideas
+These are potential features for future versions:
 
 **Coin System Extensions:**
 - Coin spending UI (user accepts/declines offers)
@@ -421,11 +395,6 @@ These are ideas for future versions — **not currently being worked on**:
 - Plugin system for extensible tools
 - Multi-session support
 - C++ port for performance-critical code
-
-**AI Capabilities:**
-- RAG integration for long-term memory
-- Persistent memory across sessions
-- Multi-modal support (images, code screenshots)
 
 ---
 
