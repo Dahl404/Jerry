@@ -82,6 +82,8 @@ class State:
         self._load_coins()  # Load coins from file on startup
         # Pending question from ask_user tool
         self.pending_question: Optional[Dict] = None  # {question, options, selected, active, answer}
+        # Agent cycle timing
+        self.min_cycle_gap: float = 0.2  # Minimum seconds between agent cycles
 
     def _get_coins_file(self) -> str:
         """Get path to coins persistence file."""
@@ -343,6 +345,17 @@ class State:
             if self.pending_question:
                 self.pending_question["active"] = False
                 self.pending_question = None
+
+    # ── Cycle timing ─────────────────────────────────────────────────────────────
+    def set_cycle_gap(self, gap: float):
+        """Set minimum gap between agent cycles (seconds)."""
+        with self._lock:
+            self.min_cycle_gap = max(0.0, gap)  # Prevent negative values
+
+    def get_cycle_gap(self) -> float:
+        """Get current minimum cycle gap."""
+        with self._lock:
+            return self.min_cycle_gap
 
     # ── Snapshot for rendering ─────────────────────────────────────────────────
     def snapshot(self):

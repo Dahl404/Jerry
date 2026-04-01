@@ -48,6 +48,10 @@ from .session import (
     SessionManager,
 )
 
+from .splash_screen import (
+    main as splash_screen,
+)
+
 __all__ = [
     # Config
     "AGENT_URL",
@@ -82,4 +86,6 @@ __all__ = [
     "TUI",
     # Session
     "SessionManager",
+    # Splash Screen
+    "splash_screen",
 ]

@@ -28,7 +28,7 @@ WORKER_URL   = f"http://localhost:{WORKER_PORT}/v1/chat/completions"
 # ─── Model Parameters ──────────────────────────────────────────────────────────
 MAX_TOKENS   = 15000
 TEMPERATURE  = 0.7
-CYCLE_SLEEP  = 5.0
+CYCLE_SLEEP  = 0.2  # Default minimum gap between agent cycles (seconds)
 
 # ─── API Timeouts ─────────────────────────────────────────────────────────────
 AGENT_TIMEOUT   = 120  # Seconds for agent API calls

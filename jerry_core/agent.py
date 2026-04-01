@@ -34,12 +34,13 @@ class Agent:
         self.state.set_status("idle")
         self.state.set_phase("idle")
         last_action_time = time.time()  # Initialize to NOW, not 0.0 (prevents immediate idle trigger)
-        min_cycle_gap = 3.0
         last_content = ""  # Track last activity for idle reflection
         last_task_text = None  # Track last task #0 to avoid duplicate prompts (BUG-C fix)
 
         while not self._stop:
             try:
+                # Get current minimum cycle gap from state (user-configurable via /gap)
+                min_cycle_gap = self.state.get_cycle_gap()
                 # Check inbox for user messages - always priority
                 msgs = self.state.drain_inbox()
                 if msgs:

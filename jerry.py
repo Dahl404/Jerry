@@ -13,6 +13,7 @@ Enhanced Features:
   · Relative path system with enter/pwd tools
   · No timeouts - holds connections indefinitely
   · Enhanced agentic abilities with autonomous thinking
+  · Particle splash screen with edge-diffusion and evaporation
 
 Worker model (port 8081) for file analysis with line numbers
 Full Qwen-Code style tools: shell, file ops, search, line editing
@@ -43,6 +44,20 @@ from jerry_core import (
     AGENT_URL,
     WORKER_URL,
 )
+
+# ─── Splash Screen Integration ──────────────────────────────────────────────────
+def run_splash(stdscr, jerry_frame=None):
+    """Run splash screen animation before Jerry starts.
+
+    Args:
+        stdscr: Curses screen
+        jerry_frame: Pre-captured Jerry UI frame for transition
+    """
+    try:
+        from jerry_core.splash_screen import main as splash_main
+        splash_main(stdscr, jerry_frame)
+    except Exception as e:
+        pass  # Skip splash if any error, continue to Jerry
 
 # ─── Redirect stdout/stderr to log file ────────────────────────────────────────
 # This prevents debug prints from corrupting the curses display
@@ -145,6 +160,28 @@ def main(stdscr):
 
     tui.setup(stdscr)
 
+    # Capture Jerry's first frame for splash transition (before any log messages)
+    H, W = stdscr.getmaxyx()
+    jerry_frame = []
+    try:
+        # Render Jerry to capture the frame (empty chat at this point)
+        tui.render(skip_erase=False)
+        stdscr.refresh()
+
+        # Capture the rendered frame
+        for y in range(H):
+            row = ""
+            for x in range(W - 1):
+                try:
+                    ch = stdscr.inch(y, x)
+                    row += chr(ch & 0xFF)
+                except curses.error:
+                    row += ' '
+            jerry_frame.append(row)
+    except Exception:
+        jerry_frame = None
+
+    # Setup initial state for splash transition (after capture)
     state.push_log("system", "━━━ Jerry ━━━")
     state.push_log("system", f"Workspace: {JERRY_BASE}")
     state.push_log("system", f"Agent model:  {AGENT_URL}")
@@ -154,7 +191,10 @@ def main(stdscr):
     state.push_log("system", "Tools: enter, pwd, execute_command, read_file, write_file, ...")
     state.push_log("system", "No timeouts - connections held indefinitely.")
 
-    # Start agent in background thread
+    # Run splash screen - it will transition into the captured Jerry frame
+    run_splash(stdscr, jerry_frame)
+
+    # Start agent in background thread after splash completes
     t = threading.Thread(target=agent.run, daemon=True, name="jerry-agent")
     t.start()
 

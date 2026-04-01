@@ -353,8 +353,8 @@ class TUI:
         """
         Row allocation (H rows total):
           If face enabled:
-            rows  0-49        face panel (50 rows) + todo sidebar
-            rows  50-(H-5)    chat feed (fills remaining space)
+            rows  0-face_h    face panel (proportional: ~50% of H) + todo sidebar
+            rows  face_h-(H-5) chat feed (fills remaining space)
             row   H-4         status bar (1 row)
             rows  H-3 … H-1   input box (height = 3)
           If face disabled:
@@ -370,24 +370,26 @@ class TUI:
         input_y = H - 3
         
         if self.face_enabled:
-            # Face panel is always 50 lines tall, 100 chars wide (fixed)
-            face_h = 50
-            face_w = 100  # Fixed width for face
-            
+            # Face panel: scale by width only, maintain aspect ratio
+            # Face is 70% of terminal width, height scales proportionally
+            # ASCII chars are ~2:1 (width:height), so 100x50 chars = ~1:1 visual
+            face_w = max(20, int(W * 0.7))  # 70% of terminal width
+            face_h = max(10, int(face_w * 0.5))  # 2:1 char aspect = 1:1 visual
+
             # Chat feed fills space between face and status bar
-            # Available rows: from row 50 to row (H-5), inclusive
+            # Available rows: from row face_h to row (H-5), inclusive
             chat_y = face_h  # Start right after face
             chat_h = H - 4 - face_h  # From face bottom to status bar top
-            
+
             # Todo sidebar fills space between face and right edge
             # Only show if todos exist AND terminal is wider than face
             todo_w = 0
             if todos and W > face_w:
                 todo_w = W - face_w  # Fill remaining space
-            
+
             # Chat width is full terminal width
             chat_w = W
-            
+
             return H, W, face_h, face_w, todo_w, chat_h, chat_w, status_y, input_y
         else:
             # Face disabled - use original full-height feed layout
@@ -399,36 +401,41 @@ class TUI:
 
     # ── Full redraw ───────────────────────────────────────────────────────────
 
-    def render(self):
-        """Render the screen."""
+    def render(self, skip_erase: bool = False):
+        """Render the screen.
+        
+        Args:
+            skip_erase: If True, don't clear screen before rendering (for overlays)
+        """
         try:
             H, W = self.stdscr.getmaxyx()
         except curses.error:
             return  # Terminal not ready
-        
-        # Minimum size check
+
+        # Minimum size check (relaxed for proportional face sizing)
         if self.face_enabled:
-            if H < 60 or W < 100:
-                self._draw_min_size_warning(H, W, "100x60")
+            if H < 20 or W < 30:
+                self._draw_min_size_warning(H, W, "30x20")
                 return
         else:
-            if H < 24 or W < 80:
-                self._draw_min_size_warning(H, W, "80x24")
+            if H < 20 or W < 40:
+                self._draw_min_size_warning(H, W, "40x20")
                 return
-        
-        # Clear screen and draw
-        self.stdscr.erase()
-        
+
+        # Clear screen and draw (unless skipping for overlay transitions)
+        if not skip_erase:
+            self.stdscr.erase()
+
         if self.state.is_stream_mode():
             self._draw_stream_screen(H, W)
         else:
             self._draw_normal_mode(H, W)
-        
+
         # Refresh screen
         self.stdscr.refresh()
-        
+
         self.frame += 1
-        
+
         # Parse emotion tags from complete messages
         # Live streaming emotion parsing happens in agent.py during token generation
         if self.face_enabled:
@@ -833,43 +840,35 @@ class TUI:
         self._draw_input(y=input_y, x=0, h=3, w=W)
 
     def _draw_face_panel(self, y: int, x: int, h: int, w: int):
-        """Draw the ASCII face panel showing current emotion.
-        
-        Args:
-            y: Starting row
-            x: Starting column
-            h: Height (50 rows)
-            w: Width (100 chars)
-        """
+        """Draw face panel - scaled like splash_screen.py"""
         try:
-            # Get current face lines
-            face_lines = self.face_display.get_current_face()
-            
-            # Draw face lines with border
+            # Scale face to panel size (minus borders)
+            face_lines = self.face_display.get_current_face(w - 2, h - 2)
+
             battr = curses.color_pair(_C["border"]) | curses.A_DIM
             emotion = self.face_display.current_emotion.capitalize()
-            
-            # Top border with emotion label
+
+            # Top border
             try:
                 top_border = "╭" + "─" * (w - 2) + "╮"
                 self.stdscr.addstr(y, x, top_border[:w], battr)
-                # Add emotion label
                 label = f"◦ {emotion} "
                 self.stdscr.addstr(y, x + 2, label, battr | curses.A_BOLD)
             except curses.error:
                 pass
-            
-            # Face lines (50 lines total, but we have borders)
-            for i, line in enumerate(face_lines[:h-2]):
+
+            # Draw face lines
+            for i, line in enumerate(face_lines):
+                row = y + i + 1
+                if row >= y + h - 1:
+                    break
                 try:
-                    # Left and right borders
-                    self.stdscr.addstr(y + i + 1, x, "│", battr)
-                    self.stdscr.addstr(y + i + 1, x + w - 1, "│", battr)
-                    # Face content
-                    self.stdscr.addstr(y + i + 1, x + 1, line[:w-2], curses.color_pair(_C["jerry_txt"]))
+                    self.stdscr.addstr(row, x, "│", battr)
+                    self.stdscr.addstr(row, x + w - 1, "│", battr)
+                    self.stdscr.addstr(row, x + 1, line[:w-2], curses.color_pair(_C["jerry_txt"]))
                 except curses.error:
                     pass
-            
+
             # Bottom border
             try:
                 bottom_border = "╰" + "─" * (w - 2) + "╯"
@@ -877,7 +876,6 @@ class TUI:
             except curses.error:
                 pass
         except Exception:
-            # Catch any errors to prevent crash
             pass
 
     def _draw_question_panel(self, y: int, W: int, question: Dict):
@@ -1614,31 +1612,27 @@ class TUI:
     # ── Window-based drawing methods (for double-buffering) ─────────────────
 
     def _draw_face_panel_to_window(self, win, y: int, x: int, h: int, w: int):
-        """Draw the ASCII face panel to specified window.
-        
-        Args:
-            win: Window to draw to (can be off-screen buffer)
-            y: Starting row
-            x: Starting column
-            h: Height (50 rows)
-            w: Width (100 chars)
-        """
+        """Draw face panel to window - scaled like splash_screen.py"""
         try:
-            face_lines = self.face_display.get_current_face()
+            # Scale face to panel size (minus borders)
+            face_lines = self.face_display.get_current_face(w - 2, h - 2)
             battr = curses.color_pair(_C["border"]) | curses.A_DIM
             emotion = self.face_display.current_emotion.capitalize()
 
-            # Top border with emotion label
+            # Top border
             top_border = "╭" + "─" * (w - 2) + "╮"
             win.addstr(y, x, top_border[:w], battr)
             label = f"◦ {emotion} "
             win.addstr(y, x + 2, label, battr | curses.A_BOLD)
 
-            # Face lines
-            for i, line in enumerate(face_lines[:h-2]):
-                win.addstr(y + i + 1, x, "│", battr)
-                win.addstr(y + i + 1, x + w - 1, "│", battr)
-                win.addstr(y + i + 1, x + 1, line[:w-2], curses.color_pair(_C["jerry_txt"]))
+            # Draw face lines
+            for i, line in enumerate(face_lines):
+                row = y + i + 1
+                if row >= y + h - 1:
+                    break
+                win.addstr(row, x, "│", battr)
+                win.addstr(row, x + w - 1, "│", battr)
+                win.addstr(row, x + 1, line[:w-2], curses.color_pair(_C["jerry_txt"]))
 
             # Bottom border
             bottom_border = "╰" + "─" * (w - 2) + "╯"
@@ -2229,6 +2223,7 @@ class TUI:
             self.state.push_log("info", "/theme [dark|light|auto]  toggle or set theme")
             self.state.push_log("info", "/face [show|hide] toggle face panel (default: show)")
             self.state.push_log("info", "/chat_threshold <n> full feed at N+ rows (default: 15)")
+            self.state.push_log("info", "/gap [seconds]    set agent cycle speed (default: 0.2)")
             self.state.push_log("info", "/praise [reason]  reward Jerry with coins (default: 'Great job!')")
             self.state.push_log("info", "/coins            check Jerry's coin balance")
             self.state.push_log("info", "/load             upload file(s) to io/ folder")
@@ -2314,6 +2309,21 @@ class TUI:
                     self.state.push_log("info", "usage: /chat_threshold <number>")
             else:
                 self.state.push_log("info", f"Current chat threshold: {self.chat_threshold} rows")
+
+        elif cmd == "gap":
+            if len(parts) > 1:
+                try:
+                    gap = float(parts[1])
+                    if gap >= 0:
+                        self.state.set_cycle_gap(gap)
+                        self.state.push_log("info", f"✓ Cycle gap set to {gap}s")
+                    else:
+                        self.state.push_log("info", "Gap must be >= 0")
+                except ValueError:
+                    self.state.push_log("info", "usage: /gap <seconds>")
+            else:
+                current = self.state.get_cycle_gap()
+                self.state.push_log("info", f"Current cycle gap: {current}s (default: 0.2s)")
 
         elif cmd == "stream":
             if len(parts) > 1:

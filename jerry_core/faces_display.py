@@ -3,6 +3,7 @@
 
 Displays emotion-based ASCII art faces from the faces directory.
 Supports smooth transitions between emotions via neutral state.
+Lightweight rendering with dynamic sizing.
 """
 
 import os
@@ -34,9 +35,7 @@ EMOTION_MAP = {
     "amazed": "surprise_2",
 }
 
-# Face display dimensions
-FACE_WIDTH = 100  # Characters wide
-FACE_HEIGHT = 50  # Lines tall (based on face files)
+# No fixed dimensions - adapt to terminal
 
 
 class FaceDisplay:
@@ -47,7 +46,7 @@ class FaceDisplay:
         self.current_emotion: str = "neutral"
         self.target_emotion: Optional[str] = None
         self.in_transition: bool = False
-        self.transition_stage: int = 0  # 0=done, 1=going to neutral, 2=going to target
+        self.transition_stage: int = 0
         self._load_faces()
 
     def _load_faces(self):
@@ -61,10 +60,6 @@ class FaceDisplay:
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         lines = f.read().splitlines()
-                        # Pad or trim to FACE_HEIGHT lines
-                        while len(lines) < FACE_HEIGHT:
-                            lines.append("")
-                        lines = lines[:FACE_HEIGHT]
                         self.faces[filename] = lines
                 except Exception:
                     pass
@@ -90,8 +85,7 @@ class FaceDisplay:
         if face_name == self.current_emotion and not self.in_transition:
             return
 
-        # If already in transition, just update target (don't reset stage)
-        # This prevents rapid emotion changes from keeping face stuck on neutral
+        # If already in transition, just update target
         if self.in_transition:
             self.target_emotion = face_name
             return
@@ -125,62 +119,75 @@ class FaceDisplay:
         clean_text = re.sub(r'<\w+>', '', text)
         return clean_text
 
-    def get_current_face(self) -> List[str]:
-        """Get current face lines for display.
-        
+    def get_current_face(self, term_width: int = 100, term_height: int = 50) -> List[str]:
+        """Get current face lines scaled to terminal size.
+
+        Uses same scaling as splash_screen.py:
+            scale = (width - margin * 2) / orig_width
+
+        Face scales relative to screen size.
+        Particle resolution scales with the face.
+
+        Args:
+            term_width: Terminal width
+            term_height: Terminal height
+
         Returns:
-            List of 50 face lines, each 100 characters wide
+            List of scaled face lines
         """
-        # If transitioning, handle state machine
+        # Handle transition
         if self.in_transition:
             if self.transition_stage == 1:
-                # Going to neutral first
                 self.current_emotion = "neutral"
                 self.transition_stage = 2
             elif self.transition_stage == 2:
-                # Now going to target
                 if self.target_emotion:
                     self.current_emotion = self.target_emotion
                     self.target_emotion = None
                 self.in_transition = False
                 self.transition_stage = 0
-        
-        # Get face lines
+
         face_lines = self.faces.get(self.current_emotion, self.faces.get("neutral", []))
-        
         if not face_lines:
-            # Return empty face if none loaded
-            return [" " * FACE_WIDTH] * FACE_HEIGHT
-        
-        # Ensure each line is exactly FACE_WIDTH characters
+            return []
+
+        # Get actual face dimensions
+        orig_h = len(face_lines)
+        orig_w = max(len(line) for line in face_lines) if face_lines else 0
+        if orig_w == 0 or orig_h == 0:
+            return face_lines
+
+        # Calculate scale like splash_screen.py does
+        # Face scales relative to screen size
+        margin = 2
+        scale = (term_width - margin * 2) / orig_w if orig_w > 0 else 1
+
+        # Scale face dimensions by the scale factor
+        scaled_h = max(1, int(orig_h * scale))
+        scaled_w = max(1, int(orig_w * scale))
+
+        # Sample face at scaled resolution
         result = []
-        for line in face_lines:
-            # Pad or trim to FACE_WIDTH
-            if len(line) < FACE_WIDTH:
-                line = line + " " * (FACE_WIDTH - len(line))
-            else:
-                line = line[:FACE_WIDTH]
-            result.append(line)
-        
+        for new_row in range(scaled_h):
+            orig_row = int(new_row * orig_h / scaled_h)
+            if orig_row < len(face_lines):
+                line = face_lines[orig_row]
+                new_line = ""
+                for new_col in range(scaled_w):
+                    orig_col = int(new_col * orig_w / scaled_w)
+                    if orig_col < len(line):
+                        new_line += line[orig_col]
+                    else:
+                        new_line += " "
+                result.append(new_line)
+
         return result
 
-    def render_face(self, width: int = FACE_WIDTH) -> str:
-        """Render face as a single string.
-        
-        Args:
-            width: Terminal width to fit (default: 100)
-            
-        Returns:
-            Face as newline-separated string
-        """
-        face_lines = self.get_current_face()
-        
-        # If terminal is too small, show warning
-        if width < FACE_WIDTH:
-            warning = f"⚠️  Terminal too narrow! Need {FACE_WIDTH} chars, have {width}. Please resize."
-            warning_lines = [warning.center(width) for _ in range(FACE_HEIGHT)]
-            return "\n".join(warning_lines)
-        
+    def render_face(self, width: int = 100, height: int = 50) -> str:
+        """Render face scaled to terminal."""
+        face_lines = self.get_current_face(width, height)
+        if not face_lines:
+            return ""
         return "\n".join(face_lines)
 
 
