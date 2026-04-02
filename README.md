@@ -1,4 +1,4 @@
-# JERRY v1.0 — Autonomous Agent System
+# JERRY vALPHA_006 — Autonomous Agent System
 
 ## System Overview
 
