@@ -10,6 +10,8 @@ import os
 import re
 import textwrap
 import math
+import time
+import random
 import unicodedata
 from typing import List, Tuple, Optional, Dict
 from datetime import datetime
@@ -436,6 +438,10 @@ class TUI:
 
         self.frame += 1
 
+        # Update face transition (diffusion animation)
+        if self.face_enabled and hasattr(self.face_display, 'update_transition'):
+            self.face_display.update_transition(0.03)  # 3% per frame
+
         # Parse emotion tags from complete messages
         # Live streaming emotion parsing happens in agent.py during token generation
         if self.face_enabled:
@@ -656,18 +662,18 @@ class TUI:
 
     def _parse_recent_emotions(self):
         """Parse emotion tags from NEW chat messages and update face display.
-        
+
         Only processes messages that haven't been parsed yet, finding the most
         recent emotion tag to keep the face display stable and persistent.
         """
         import re
-        
+
         chat = self.state.chat[:]
-        
+
         # Find the last Jerry message we haven't parsed yet
         last_jerry_idx = -1
         last_emotion_found = None
-        
+
         # Scan through messages starting after our last parsed position
         start_idx = max(0, self._last_parsed_msg_idx + 1)
         for i in range(start_idx, len(chat)):
@@ -675,21 +681,21 @@ class TUI:
             if msg.role == "jerry" and msg.text:
                 # Track this as the latest Jerry message
                 last_jerry_idx = i
-                
+
                 # Find all emotion tags in this message
                 tags = re.findall(r'<(\w+)>', msg.text.lower())
                 if tags:
                     # Use the LAST emotion tag in this message
                     # (in case of multiple tags, the last one is most current)
                     last_emotion_found = tags[-1]
-        
+
         # If we found a new emotion, update the face display
         if last_emotion_found:
-            # Validate it's a known emotion
+            # Validate it's a known emotion (check both old and new face systems)
             from .faces_display import EMOTION_MAP
-            if last_emotion_found in EMOTION_MAP or last_emotion_found in self.face_display.faces:
+            if last_emotion_found in EMOTION_MAP or last_emotion_found in self.face_display.colored_faces or last_emotion_found in self.face_display.faces:
                 self.face_display.set_emotion(last_emotion_found)
-        
+
         # Update our tracking to the last Jerry message we processed
         # (even if no emotion was found, we've checked this message)
         if last_jerry_idx >= 0:
@@ -840,13 +846,15 @@ class TUI:
         self._draw_input(y=input_y, x=0, h=3, w=W)
 
     def _draw_face_panel(self, y: int, x: int, h: int, w: int):
-        """Draw face panel - scaled like splash_screen.py"""
+        """Draw face panel - diffuses in from edges"""
         try:
-            # Scale face to panel size (minus borders)
-            face_lines = self.face_display.get_current_face(w - 2, h - 2)
-
+            face_lines, color_grid = self.face_display.get_colored_face(w - 2, h - 2)
+            
+            if not face_lines:
+                return
+            
             battr = curses.color_pair(_C["border"]) | curses.A_DIM
-            emotion = self.face_display.current_emotion.capitalize()
+            emotion = self.face_display.current_face.capitalize()
 
             # Top border
             try:
@@ -857,7 +865,46 @@ class TUI:
             except curses.error:
                 pass
 
-            # Draw face lines
+            # Initialize revealed set for edge diffusion
+            if not hasattr(self, '_face_revealed'):
+                self._face_revealed = set()
+                self._face_last_update = time.time()
+            
+            face_h = len(face_lines)
+            face_w = len(face_lines[0]) if face_lines else 0
+            total = face_h * face_w
+            
+            # Update revealed positions (diffuse from edges)
+            current_time = time.time()
+            if current_time - self._face_last_update > 0.02:  # 20ms = 50 FPS
+                self._face_last_update = current_time
+                target_revealed = min(len(self._face_revealed) + max(5, int(total * 0.03)), total)
+                
+                while len(self._face_revealed) < target_revealed:
+                    # 70% bias towards edges
+                    if random.random() < 0.7 and len(self._face_revealed) < total * 0.5:
+                        if random.random() < 0.5:
+                            row = random.randint(0, face_h - 1)
+                            col = random.choice([0, face_w - 1])
+                        else:
+                            row = random.choice([0, face_h - 1])
+                            col = random.randint(0, face_w - 1)
+                    else:
+                        row = random.randint(0, face_h - 1)
+                        col = random.randint(0, face_w - 1)
+                    self._face_revealed.add((row, col))
+            
+            # Reset revealed set when face changes
+            if not hasattr(self, '_face_last_face') or self._face_last_face != self.face_display.current_face:
+                self._face_revealed = set()
+                self._face_last_face = self.face_display.current_face
+            
+            # Initialize color pairs
+            if not hasattr(self, '_face_color_map'):
+                self._face_color_map = {}
+                self._face_next_pair = 100
+            
+            # Draw particles
             for i, line in enumerate(face_lines):
                 row = y + i + 1
                 if row >= y + h - 1:
@@ -865,7 +912,26 @@ class TUI:
                 try:
                     self.stdscr.addstr(row, x, "│", battr)
                     self.stdscr.addstr(row, x + w - 1, "│", battr)
-                    self.stdscr.addstr(row, x + 1, line[:w-2], curses.color_pair(_C["jerry_txt"]))
+                    
+                    colors = color_grid[i] if i < len(color_grid) else []
+                    for col, char in enumerate(line[:w-2]):
+                        if char != ' ' and (i, col) in self._face_revealed:
+                            color_hex = colors[col] if col < len(colors) else 'FFFFFF'
+                            
+                            if color_hex not in self._face_color_map and self._face_next_pair < 255:
+                                try:
+                                    r = int(color_hex[0:2], 16)
+                                    g = int(color_hex[2:4], 16)
+                                    b = int(color_hex[4:6], 16)
+                                    curses.init_color(self._face_next_pair, r*1000//255, g*1000//255, b*1000//255)
+                                    curses.init_pair(self._face_next_pair, self._face_next_pair, -1)
+                                    self._face_color_map[color_hex] = self._face_next_pair
+                                    self._face_next_pair += 1
+                                except:
+                                    self._face_color_map[color_hex] = _C["jerry_txt"]
+                            
+                            attr = curses.color_pair(self._face_color_map[color_hex])
+                            self.stdscr.addch(row, x + 1 + col, char, attr)
                 except curses.error:
                     pass
 
@@ -2221,7 +2287,9 @@ class TUI:
             self.state.push_log("info", "/clear            clear input buffer")
             self.state.push_log("info", "/compress         compress conversation history")
             self.state.push_log("info", "/theme [dark|light|auto]  toggle or set theme")
-            self.state.push_log("info", "/face [show|hide] toggle face panel (default: show)")
+            self.state.push_log("info", "/face [show|hide|toggle]  toggle face panel")
+            self.state.push_log("info", "/face <name>  set face (plain, unique, result, grumpy, happy, neutral)")
+            self.state.push_log("info", "/face list  show available faces")
             self.state.push_log("info", "/chat_threshold <n> full feed at N+ rows (default: 15)")
             self.state.push_log("info", "/gap [seconds]    set agent cycle speed (default: 0.2)")
             self.state.push_log("info", "/praise [reason]  reward Jerry with coins (default: 'Great job!')")
@@ -2248,9 +2316,17 @@ class TUI:
 
         elif cmd == "face":
             if len(parts) > 1:
-                # Set face visibility: /face show, /face hide, /face toggle
                 face_arg = parts[1].lower()
-                if face_arg in ("show", "on", "enable", "true"):
+                # Check if it's a face name
+                face_names = ['plain', 'unique', 'result', 'grumpy', 'happy', 'neutral']
+                if face_arg in face_names:
+                    # Set specific face
+                    self.face_display.set_face(face_arg)
+                    # Reset face diffusion animation
+                    if hasattr(self, '_face_revealed'):
+                        self._face_revealed.clear()
+                    self.state.push_log("info", f"✓ Face set to '{face_arg}'")
+                elif face_arg in ("show", "on", "enable", "true"):
                     self.face_enabled = True
                     self.state.push_log("info", "✓ Face panel enabled")
                 elif face_arg in ("hide", "off", "disable", "false"):
@@ -2260,12 +2336,16 @@ class TUI:
                     self.face_enabled = not self.face_enabled
                     state_str = "enabled" if self.face_enabled else "disabled"
                     self.state.push_log("info", f"✓ Face panel {state_str}")
+                elif face_arg == "list":
+                    self.state.push_log("info", "Available faces: " + ", ".join(face_names))
                 else:
-                    self.state.push_log("info", f"Unknown face option: {face_arg} (use: show, hide, or toggle)")
+                    self.state.push_log("info", f"Unknown face option: {face_arg}")
+                    self.state.push_log("info", "Use: /face <name> or /face show|hide|toggle|list")
             else:
                 # Toggle face: /face
                 self.face_enabled = not self.face_enabled
                 state_str = "enabled" if self.face_enabled else "disabled"
+                self.state.push_log("info", f"✓ Face panel {state_str}")
 
         elif cmd == "praise":
             # User praising Jerry: /praise [reason]

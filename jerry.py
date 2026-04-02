@@ -46,17 +46,28 @@ from jerry_core import (
 )
 
 # ─── Splash Screen Integration ──────────────────────────────────────────────────
-def run_splash(stdscr, jerry_frame=None):
+def run_splash(stdscr, jerry_frame=None, face_panel_capture=None):
     """Run splash screen animation before Jerry starts.
 
     Args:
         stdscr: Curses screen
         jerry_frame: Pre-captured Jerry UI frame for transition
+        face_panel_capture: Captured face panel area for particle continuity
     """
+    import traceback
     try:
         from jerry_core.splash_screen import main as splash_main
-        splash_main(stdscr, jerry_frame)
+        splash_main(stdscr, jerry_frame, face_panel_capture)
     except Exception as e:
+        # Log error but continue to Jerry
+        try:
+            import os
+            log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs', 'splash_error.log')
+            with open(log_path, 'w') as f:
+                f.write(f"Splash error: {e}\n")
+                f.write(traceback.format_exc())
+        except:
+            pass
         pass  # Skip splash if any error, continue to Jerry
 
 # ─── Redirect stdout/stderr to log file ────────────────────────────────────────
@@ -160,28 +171,7 @@ def main(stdscr):
 
     tui.setup(stdscr)
 
-    # Capture Jerry's first frame for splash transition (before any log messages)
-    H, W = stdscr.getmaxyx()
-    jerry_frame = []
-    try:
-        # Render Jerry to capture the frame (empty chat at this point)
-        tui.render(skip_erase=False)
-        stdscr.refresh()
-
-        # Capture the rendered frame
-        for y in range(H):
-            row = ""
-            for x in range(W - 1):
-                try:
-                    ch = stdscr.inch(y, x)
-                    row += chr(ch & 0xFF)
-                except curses.error:
-                    row += ' '
-            jerry_frame.append(row)
-    except Exception:
-        jerry_frame = None
-
-    # Setup initial state for splash transition (after capture)
+    # Setup initial state
     state.push_log("system", "━━━ Jerry ━━━")
     state.push_log("system", f"Workspace: {JERRY_BASE}")
     state.push_log("system", f"Agent model:  {AGENT_URL}")
@@ -191,8 +181,45 @@ def main(stdscr):
     state.push_log("system", "Tools: enter, pwd, execute_command, read_file, write_file, ...")
     state.push_log("system", "No timeouts - connections held indefinitely.")
 
-    # Run splash screen - it will transition into the captured Jerry frame
-    run_splash(stdscr, jerry_frame)
+    # Render Jerry and capture frame for splash transition
+    H, W = stdscr.getmaxyx()
+    jerry_frame = []
+    face_panel_capture = None
+    
+    # Calculate face panel position (same as tui.py uses)
+    face_w = 30  # Face panel width
+    face_h = 20  # Face panel height
+    
+    tui.render(skip_erase=False)
+    stdscr.refresh()
+    time.sleep(0.05)
+    
+    # Capture face panel area specifically
+    try:
+        face_capture = []
+        for y in range(face_h):
+            row = stdscr.instr(y, 0, face_w - 1).decode('utf-8', errors='replace')[:face_w-1]
+            face_capture.append(row.ljust(face_w-1))
+        face_panel_capture = face_capture
+    except:
+        pass
+    
+    # Capture full Jerry frame for splash transition
+    for y in range(H):
+        try:
+            row = stdscr.instr(y, 0, W - 1).decode('utf-8', errors='replace')[:W-1]
+            jerry_frame.append(row.ljust(W-1))
+        except:
+            jerry_frame.append(' ' * (W - 1))
+
+    # Clear and run splash
+    stdscr.erase()
+    stdscr.refresh()
+    run_splash(stdscr, jerry_frame, face_panel_capture)
+    
+    # Pass face panel capture to tui for particle continuity
+    if face_panel_capture:
+        tui._face_panel_capture = face_panel_capture
 
     # Start agent in background thread after splash completes
     t = threading.Thread(target=agent.run, daemon=True, name="jerry-agent")
