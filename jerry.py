@@ -162,6 +162,16 @@ def main(stdscr):
     agent    = Agent(state, executor, tui)  # Pass tui for token count updates
     session  = SessionManager(state)
 
+    # Connect TUI to Agent for persona prefix updates
+    tui._agent_ref = agent
+    state._agent_ref = agent  # Also on state for executor access
+
+    # Set initial persona tool packs on agent
+    from jerry_core.personas import get_persona_manager
+    persona_mgr = get_persona_manager()
+    current_persona = persona_mgr.get_current()
+    agent.set_tool_packs(current_persona.tool_packs)
+
     # Register TUI's update_screen as callback for stream mode
     state.set_screen_callback(tui.update_screen)
 

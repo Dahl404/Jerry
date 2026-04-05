@@ -7,10 +7,11 @@ import re
 import requests
 import threading
 from typing import Dict, List
-from .config import AGENT_URL, MAX_TOKENS, TEMPERATURE, CONV_TRIM, TOOLS, SYSTEM_PROMPT, CYCLE_SLEEP, JERRY_BASE
+from .config import AGENT_URL, MAX_TOKENS, TEMPERATURE, CONV_TRIM, SYSTEM_PROMPT, CYCLE_SLEEP, JERRY_BASE
 from .worker import strip_think
 from .models import State
 from .executor import Executor
+from .tool_loader import load_tools_for_packs, get_tool_catalog_for_packs
 
 class Agent:
     """Autonomous agent with streaming output."""
@@ -19,15 +20,48 @@ class Agent:
         self.state    = state
         self.executor = executor
         self.tui      = tui  # Optional: for updating token count
-        # Format SYSTEM_PROMPT here so {jerry_base} resolves to the actual path.
-        # Without this the model sees the literal string "{jerry_base}" in its prompt.
-        tool_list = "\n".join([f"- `{t['function']['name']}`: {t['function']['description']}" for t in TOOLS[:10]])
-        self.conv:    List[Dict] = [{"role": "system", "content": SYSTEM_PROMPT.format(jerry_base=JERRY_BASE, tool_list=tool_list)}]
+        self._persona_prefix = ""  # Optional persona-specific prompt prefix
+        self._tool_packs = ["agent"]  # Default tool packages
+        # Load tools and build system prompt
+        self._load_tools_and_prompt()
         self._stop    = False
         self._is_thinking = False
 
     def stop(self):
         self._stop = True
+
+    def _load_tools_and_prompt(self):
+        """Load tools from packages and rebuild system prompt."""
+        # Load tools from assigned packages
+        self.tools = load_tools_for_packs(self._tool_packs)
+        # Load bundled prompts from tool packs
+        from .tool_loader import load_prompts_for_packs
+        pack_prompt = load_prompts_for_packs(self._tool_packs)
+        # Build tool list for API
+        tool_list = "\n".join([f"- `{t['function']['name']}`: {t['function']['description']}" for t in self.tools[:10]])
+        # Build system prompt
+        system_content = SYSTEM_PROMPT.format(jerry_base=JERRY_BASE, tool_list=tool_list)
+        # Combined persona = persona prefix + bundled pack prompts
+        combined_persona = ""
+        if self._persona_prefix:
+            combined_persona = self._persona_prefix
+        if pack_prompt:
+            combined_persona = combined_persona + "\n\n" + pack_prompt if combined_persona else pack_prompt
+        if combined_persona:
+            system_content = combined_persona + "\n\n" + system_content
+        self.conv = [{"role": "system", "content": system_content}]
+
+    def set_persona_prefix(self, prefix: str):
+        """Set the persona prompt prefix and rebuild system prompt."""
+        self._persona_prefix = prefix
+        self._load_tools_and_prompt()
+        self.state.push_log("info", f"Persona prompt prefix set")
+
+    def set_tool_packs(self, packs: List[str]):
+        """Set tool packages and rebuild system prompt."""
+        self._tool_packs = packs
+        self._load_tools_and_prompt()
+        self.state.push_log("info", f"Tool packages updated: {', '.join(packs)}")
 
     # ── Main loop (runs in background thread) ──────────────────────────────────
     def run(self):
@@ -302,6 +336,15 @@ class Agent:
 
                     # Execute every tool call and append results
                     self._execute_tool_calls(valid_tool_calls)
+
+                    # If ask_user was called, DON'T call the model again — loop back
+                    # and wait for the user to answer the pending question.
+                    # The pending question check at the top of the loop will block
+                    # until the user answers, then the model gets the answer.
+                    ask_user_called = any(tc["function"]["name"] == "ask_user" for tc in valid_tool_calls)
+                    if ask_user_called:
+                        self.state.push_log("debug", "ask_user called — waiting for user answer in loop")
+                        continue  # Go back to top of loop, pending question check will block
                 else:
                     # No valid tool calls - save as text response
                     # CRITICAL: Don't include "tool_calls": None - omit the key entirely
@@ -400,7 +443,7 @@ class Agent:
                     str_val = arg_match.group(2) or arg_match.group(3)
                     num_val = arg_match.group(4)
                     array_val = arg_match.group(5)
-                    
+
                     if array_val is not None:
                         # Parse array - extract quoted strings
                         array_items = re.findall(r'"([^"]*)"', array_val)
@@ -412,6 +455,57 @@ class Agent:
                     elif str_val is not None:
                         params[arg_name] = str_val
                     # Ignore params that don't match any pattern (like reply="ask_user")
+
+            tool_calls.append({
+                "id": f"call_{int(time.time()*1000)}_{len(tool_calls)}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": json.dumps(params),
+                },
+            })
+
+        # ── Pattern 0b: Bare function call: func_name() or func_name(key="val") ──
+        # Matches: check_coins(), offer_coins(amount=5, reason="test"), todo_complete()
+        # Only matches known tool names to avoid false positives on normal text
+        known_tools = {
+            "help", "execute_command", "read_file", "write_file", "replace_lines",
+            "insert_lines", "delete_lines", "list_directory", "search_files",
+            "query_worker", "reset_worker", "todo_write", "todo_add", "todo_complete",
+            "todo_remove", "write_diary", "read_diary", "set_expression",
+            "enter", "pwd", "capture_screen", "send_keys", "send_ctrl",
+            "get_terminal_info", "set_target_session", "run_program",
+            "ask_user", "check_coins", "offer_coins", "load_multiple_files",
+            "worker_write_program",
+        }
+        bare_pattern = r'\b(\w+)\s*\(([^)]*)\)'
+        for match in re.finditer(bare_pattern, content):
+            func_name = match.group(1)
+            if func_name not in known_tools:
+                continue
+            # Skip if this is inside brackets (already matched by pattern 0)
+            start = match.start()
+            if start > 0 and content[start-1] == '[':
+                continue
+            args_str = match.group(2)
+
+            params = {}
+            if args_str.strip():
+                arg_pattern = r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\d+)|\[([^\]]*)\])'
+                for arg_match in re.finditer(arg_pattern, args_str):
+                    arg_name = arg_match.group(1)
+                    str_val = arg_match.group(2) or arg_match.group(3)
+                    num_val = arg_match.group(4)
+                    array_val = arg_match.group(5)
+                    if array_val is not None:
+                        array_items = re.findall(r'"([^"]*)"', array_val)
+                        if not array_items:
+                            array_items = re.findall(r"'([^']*)'", array_val)
+                        params[arg_name] = array_items
+                    elif num_val is not None:
+                        params[arg_name] = int(num_val)
+                    elif str_val is not None:
+                        params[arg_name] = str_val
 
             tool_calls.append({
                 "id": f"call_{int(time.time()*1000)}_{len(tool_calls)}",
@@ -674,10 +768,10 @@ class Agent:
 
                 # Log conversation state for debugging
                 tool_call_count = sum(1 for m in messages if m.get('tool_calls'))
-                self.state.push_log("debug", f"Sending {len(messages)} messages ({tool_call_count} with tool_calls), tools={len(TOOLS)}")
+                self.state.push_log("debug", f"Sending {len(messages)} messages ({tool_call_count} with tool_calls), tools={len(self.tools)}")
                 
                 # DEBUG: Log tools being sent
-                tool_names = [t['function']['name'] for t in TOOLS[:5]]
+                tool_names = [t["function"]["name"] for t in self.tools[:5]]
                 self.state.push_log("debug", f"First 5 tools: {', '.join(tool_names)}...")
                 
                 # DEBUG: Log first/last few messages to see what we're sending
@@ -692,7 +786,7 @@ class Agent:
                     AGENT_URL,
                     json={
                         "messages":    messages,
-                        "tools":       TOOLS,
+                        "tools":       self.tools,
                         "tool_choice": "auto",
                         "max_tokens":  MAX_TOKENS,
                         "temperature": TEMPERATURE,
@@ -881,7 +975,7 @@ class Agent:
                 AGENT_URL,
                 json={
                     "messages":    self.conv,
-                    "tools":       TOOLS,
+                    "tools":       self.tools,
                     "tool_choice": "auto",
                     "max_tokens":  MAX_TOKENS,
                     "temperature": TEMPERATURE,

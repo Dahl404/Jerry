@@ -52,6 +52,15 @@ from .splash_screen import (
     main as splash_screen,
 )
 
+from .personas import (
+    Persona,
+    BUILTIN_PERSONAS,
+    PersonaManager,
+    get_persona_manager,
+    get_current_persona,
+    set_persona,
+)
+
 __all__ = [
     # Config
     "AGENT_URL",
@@ -88,4 +97,11 @@ __all__ = [
     "SessionManager",
     # Splash Screen
     "splash_screen",
+    # Personas
+    "Persona",
+    "BUILTIN_PERSONAS",
+    "PersonaManager",
+    "get_persona_manager",
+    "get_current_persona",
+    "set_persona",
 ]

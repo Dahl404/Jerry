@@ -8,6 +8,7 @@ Enhanced with automatic light/dark theme detection and manual theme toggle.
 import curses
 import os
 import re
+import json
 import textwrap
 import math
 import time
@@ -225,6 +226,7 @@ class TUI:
         self.face_enabled: bool = True  # Face panel visibility toggle
         self.chat_threshold: int = 15  # Switch to full feed at this height (default: 15)
         self._last_parsed_msg_idx: int = -1  # Track last message parsed for emotions
+        self._agent_ref = None  # Reference to Agent for persona prefix updates
 
     def enable_stream_mode(self, target_session: str):
         """Enable screen stream mode - shows target terminal screen."""
@@ -775,6 +777,120 @@ class TUI:
         # Draw input bar
         self._draw_input(y=input_start, x=0, h=3, w=W)
 
+    def _show_persona_create_ui(self):
+        """Show persona creation UI with options (mimics user_question tool)."""
+        self.state.push_log("info", "─── Create Custom Persona ─────────────────────────")
+        self.state.push_log("info", "  ")
+        self.state.push_log("info", "  Please provide the following:")
+        self.state.push_log("info", "  ")
+        self.state.push_log("info", "  1. Name (single word, underscores ok): my_persona")
+        self.state.push_log("info", "  2. Description: A helpful assistant")
+        self.state.push_log("info", "  3. Prompt: Personality instructions")
+        self.state.push_log("info", "  ")
+        self.state.push_log("info", "  Example command:")
+        self.state.push_log("info", "  /persona create my_persona \"A helpful bot\" \"You are helpful\"")
+        self.state.push_log("info", "─────────────────────────────────────────────────────")
+
+    def _show_persona_create_wizard(self):
+        """Start the persona creation wizard."""
+        from .tool_loader import list_available_packages
+        packs = list_available_packages()
+        self.state.pending_question = {
+            "question": "Create Persona - Enter name:",
+            "options": [],
+            "selected": 0,
+            "selected_indices": set(),
+            "active": True,
+            "answer": None,
+            "type": "persona_create_name",
+            "available_packs": packs,
+        }
+        self.state.set_status("creating persona...")
+
+    def _start_persona_create_wizard(self):
+        """Alias for _show_persona_create_wizard."""
+        self._show_persona_create_wizard()
+
+    def _start_persona_edit_wizard(self, persona):
+        """Start persona edit wizard with prefilled values."""
+        from .tool_loader import list_available_packages
+        packs = list_available_packages()
+        self.state.pending_question = {
+            "question": f"Edit '{persona.name}' — description (Enter to keep):",
+            "options": [],
+            "selected": 0,
+            "selected_indices": set(),
+            "active": True,
+            "answer": None,
+            "type": "persona_edit_desc",
+            "edit_name": persona.name,
+            "edit_persona": persona,
+            "edit_current_desc": persona.description,
+            "edit_current_packs": list(persona.tool_packs),
+            "edit_current_prompt": persona.prompt_prefix,
+            "available_packs": packs,
+            "selected_packs": list(persona.tool_packs),
+            "pack_sel": 0,
+        }
+        self.input_buf = persona.description
+        self.state.set_status(f"editing {persona.name}...")
+
+    def _start_persona_copy_wizard(self, src_name):
+        """Start persona copy wizard."""
+        from .personas import get_persona_manager
+        from .tool_loader import list_available_packages
+        persona_mgr = get_persona_manager()
+        src = persona_mgr.get_persona(src_name)
+        if not src:
+            return
+        packs = list_available_packages()
+        self.state.pending_question = {
+            "question": f"Copy '{src_name}' to (new name):",
+            "options": [],
+            "selected": 0,
+            "selected_indices": set(),
+            "active": True,
+            "answer": None,
+            "type": "persona_copy_name",
+            "copy_source": src_name,
+            "available_packs": packs,
+            "selected_packs": list(src.tool_packs),
+            "pack_sel": 0,
+        }
+        self.input_buf = ""
+        self.state.set_status(f"copying {src_name}...")
+
+    def _show_persona_menu_ui(self):
+        """Show persona selection menu - single select, Enter to pick."""
+        from .personas import get_persona_manager
+
+        persona_mgr = get_persona_manager()
+        personas = persona_mgr.list_personas()
+        current = persona_mgr.get_current()
+
+        # Build display options
+        options = []
+        for p in personas:
+            marker = "✓" if p.name == current.name else " "
+            tag = " (custom)" if p.custom else ""
+            options.append(f"{marker} {p.name}{tag}")
+        options.append("CREATE_NEW")
+
+        self.state.pending_question = {
+            "question": "Select Persona (Enter to pick)",
+            "options": options,
+            "persona_names": [p.name for p in personas] + ["__CREATE_NEW__"],
+            "selected": 0,
+            "active": True,
+            "type": "persona_select",
+            "show_submenu": False,
+            "submenu_persona": None,
+        }
+
+        self.state.set_status("selecting persona...")
+
+
+
     def _draw_ai_speech(self, y: int, W: int):
         """Draw AI's last speech output (non-command responses)."""
         # Get last chat message from jerry
@@ -846,13 +962,13 @@ class TUI:
         self._draw_input(y=input_y, x=0, h=3, w=W)
 
     def _draw_face_panel(self, y: int, x: int, h: int, w: int):
-        """Draw face panel - diffuses in from edges"""
+        """Draw face panel with particle system — characters drift, shimmer, and resize."""
         try:
             face_lines, color_grid = self.face_display.get_colored_face(w - 2, h - 2)
-            
+
             if not face_lines:
                 return
-            
+
             battr = curses.color_pair(_C["border"]) | curses.A_DIM
             emotion = self.face_display.current_face.capitalize()
 
@@ -865,75 +981,279 @@ class TUI:
             except curses.error:
                 pass
 
-            # Initialize revealed set for edge diffusion
-            if not hasattr(self, '_face_revealed'):
-                self._face_revealed = set()
-                self._face_last_update = time.time()
-            
             face_h = len(face_lines)
             face_w = len(face_lines[0]) if face_lines else 0
-            total = face_h * face_w
-            
-            # Update revealed positions (diffuse from edges)
             current_time = time.time()
-            if current_time - self._face_last_update > 0.02:  # 20ms = 50 FPS
-                self._face_last_update = current_time
-                target_revealed = min(len(self._face_revealed) + max(5, int(total * 0.03)), total)
-                
-                while len(self._face_revealed) < target_revealed:
-                    # 70% bias towards edges
-                    if random.random() < 0.7 and len(self._face_revealed) < total * 0.5:
-                        if random.random() < 0.5:
-                            row = random.randint(0, face_h - 1)
-                            col = random.choice([0, face_w - 1])
-                        else:
-                            row = random.choice([0, face_h - 1])
-                            col = random.randint(0, face_w - 1)
-                    else:
-                        row = random.randint(0, face_h - 1)
-                        col = random.randint(0, face_w - 1)
-                    self._face_revealed.add((row, col))
-            
-            # Reset revealed set when face changes
-            if not hasattr(self, '_face_last_face') or self._face_last_face != self.face_display.current_face:
-                self._face_revealed = set()
+
+            # Detect resize
+            resized = False
+            if hasattr(self, '_face_panel_h') and hasattr(self, '_face_panel_w'):
+                if self._face_panel_h != h or self._face_panel_w != w:
+                    resized = True
+            self._face_panel_h = h
+            self._face_panel_w = w
+
+            # Build target set from face data
+            target_set = set()
+            target_colors = {}
+            for i, line in enumerate(face_lines):
+                for j, char in enumerate(line):
+                    if char != ' ':
+                        target_set.add((i, j))
+                        target_colors[(i, j)] = color_grid[i][j] if i < len(color_grid) and j < len(color_grid[i]) else 'FFFFFF'
+
+            face_changed = (not hasattr(self, '_face_last_face') or self._face_last_face != self.face_display.current_face)
+
+            if face_changed:
+                # New face — create fresh particles
+                self._face_particles = []
                 self._face_last_face = self.face_display.current_face
-            
+                self._face_revealed = set()
+                self._face_last_update = current_time
+                self._face_cull_list = []
+
+                for i, line in enumerate(face_lines):
+                    for j, char in enumerate(line):
+                        if char != ' ':
+                            color_hex = target_colors[(i, j)]
+                            p = {
+                                'char': char,
+                                'color': color_hex,
+                                'src_row': i,
+                                'src_col': j,
+                                'x': float(j),
+                                'y': float(i),
+                                'alpha': 0.0,
+                                'phase_x': random.uniform(0, math.pi * 2),
+                                'phase_y': random.uniform(0, math.pi * 2),
+                                'phase_shimmer': random.uniform(0, math.pi * 2),
+                                'speed': random.uniform(0.6, 1.8),
+                                'diffusion_r': random.uniform(0.6, 1.4),
+                            }
+                            self._face_particles.append(p)
+
+            elif resized:
+                if not hasattr(self, '_face_cull_list'):
+                    self._face_cull_list = []
+
+                # Cull particles outside new bounds — fade them out
+                new_cull = []
+                kept_particles = []
+                for p in self._face_particles:
+                    if p['src_row'] >= face_h or p['src_col'] >= face_w:
+                        if 'cull_alpha' not in p:
+                            p['cull_alpha'] = 1.0
+                        new_cull.append(p)
+                    else:
+                        kept_particles.append(p)
+
+                self._face_cull_list = new_cull
+                self._face_particles = kept_particles
+                self._face_revealed = set((p['src_row'], p['src_col']) for p in kept_particles)
+
+                # Spawn new particles for newly available space
+                # They start at the center of the existing face and travel outward
+                if kept_particles:
+                    center_r = sum(p['src_row'] for p in kept_particles) / len(kept_particles)
+                    center_c = sum(p['src_col'] for p in kept_particles) / len(kept_particles)
+                else:
+                    center_r = face_h / 2.0
+                    center_c = face_w / 2.0
+
+                new_targets = [(i, j) for (i, j) in target_set if (i, j) not in self._face_revealed]
+                for (i, j) in new_targets:
+                    # Spawn from center, travel outward
+                    p = {
+                        'char': face_lines[i][j],
+                        'color': target_colors[(i, j)],
+                        'src_row': i,
+                        'src_col': j,
+                        'x': center_c,
+                        'y': center_r,
+                        'alpha': 0.0,
+                        'phase_x': random.uniform(0, math.pi * 2),
+                        'phase_y': random.uniform(0, math.pi * 2),
+                        'phase_shimmer': random.uniform(0, math.pi * 2),
+                        'speed': random.uniform(0.6, 1.8),
+                        'diffusion_r': random.uniform(0.6, 1.4),
+                        'spawn_x': center_c,
+                        'spawn_y': center_r,
+                        'travel_start': current_time,
+                    }
+                    self._face_particles.append(p)
+
+                self._face_revealed = set((p['src_row'], p['src_col']) for p in self._face_particles)
+                self._face_last_update = current_time
+
+            # Update existing particle colors to match current face
+            for p in self._face_particles:
+                key = (p['src_row'], p['src_col'])
+                if key in target_colors:
+                    p['color'] = target_colors[key]
+                if key in target_set:
+                    p['char'] = face_lines[p['src_row']][p['src_col']]
+
+            # Reveal particles gradually (edge diffusion)
+            if current_time - self._face_last_update > 0.02:
+                self._face_last_update = current_time
+                total = len(self._face_particles)
+                target_revealed = min(len(self._face_revealed) + max(5, int(total * 0.03)), total)
+
+                unrevealed = [p for p in self._face_particles if (p['src_row'], p['src_col']) not in self._face_revealed]
+                random.shuffle(unrevealed)
+                for p in unrevealed[:max(0, target_revealed - len(self._face_revealed))]:
+                    self._face_revealed.add((p['src_row'], p['src_col']))
+
+            # Global face sway — whole face drifts together (primary movement)
+            if not hasattr(self, '_face_global_phase'):
+                self._face_global_phase = 0.0
+            self._face_global_phase += 0.008
+            global_shift_x = math.sin(self._face_global_phase * 1.1) * 3.0
+            global_shift_y = math.cos(self._face_global_phase * 0.8) * 2.0
+
+            # Update particle positions (organic drift around source position)
+            for p in self._face_particles:
+                if (p['src_row'], p['src_col']) not in self._face_revealed:
+                    continue
+
+                # Travel animation for new particles
+                if 'travel_start' in p:
+                    travel_time = current_time - p['travel_start']
+                    travel_dur = 1.5  # seconds to reach target
+                    travel_t = min(1.0, travel_time / travel_dur)
+                    ease = 1.0 - pow(1.0 - travel_t, 3)  # ease out cubic
+                    base_x = p['spawn_x'] * (1.0 - ease) + p['src_col'] * ease
+                    base_y = p['spawn_y'] * (1.0 - ease) + p['src_row'] * ease
+                else:
+                    base_x = p['src_col']
+                    base_y = p['src_row']
+
+                # Organic drift — subtle per-particle jitter
+                drift_x = math.sin(current_time * p['speed'] + p['phase_x']) * p['diffusion_r'] * 0.5
+                drift_y = math.cos(current_time * p['speed'] * 0.7 + p['phase_y']) * p['diffusion_r'] * 0.3
+
+                p['x'] = base_x + drift_x + global_shift_x
+                p['y'] = base_y + drift_y + global_shift_y
+
+                # Alpha ramps up as particle is revealed
+                if p['alpha'] < 1.0:
+                    p['alpha'] = min(1.0, p['alpha'] + 0.04)
+
             # Initialize color pairs
             if not hasattr(self, '_face_color_map'):
                 self._face_color_map = {}
                 self._face_next_pair = 100
-            
-            # Draw particles
-            for i, line in enumerate(face_lines):
-                row = y + i + 1
-                if row >= y + h - 1:
+
+            # Shimmer sparkle characters
+            shimmer_chars = ['*', '+', '·', '✦', '✧']
+
+            # Draw border sides
+            for i in range(face_h):
+                screen_row = y + i + 1
+                if screen_row >= y + h - 1:
                     break
                 try:
-                    self.stdscr.addstr(row, x, "│", battr)
-                    self.stdscr.addstr(row, x + w - 1, "│", battr)
-                    
-                    colors = color_grid[i] if i < len(color_grid) else []
-                    for col, char in enumerate(line[:w-2]):
-                        if char != ' ' and (i, col) in self._face_revealed:
-                            color_hex = colors[col] if col < len(colors) else 'FFFFFF'
-                            
-                            if color_hex not in self._face_color_map and self._face_next_pair < 255:
-                                try:
-                                    r = int(color_hex[0:2], 16)
-                                    g = int(color_hex[2:4], 16)
-                                    b = int(color_hex[4:6], 16)
-                                    curses.init_color(self._face_next_pair, r*1000//255, g*1000//255, b*1000//255)
-                                    curses.init_pair(self._face_next_pair, self._face_next_pair, -1)
-                                    self._face_color_map[color_hex] = self._face_next_pair
-                                    self._face_next_pair += 1
-                                except:
-                                    self._face_color_map[color_hex] = _C["jerry_txt"]
-                            
-                            attr = curses.color_pair(self._face_color_map[color_hex])
-                            self.stdscr.addch(row, x + 1 + col, char, attr)
+                    self.stdscr.addstr(screen_row, x, "│", battr)
+                    self.stdscr.addstr(screen_row, x + w - 1, "│", battr)
                 except curses.error:
                     pass
+
+            # Render particles (shuffled to avoid top-to-bottom draw order)
+            render_order = list(self._face_particles)
+            random.shuffle(render_order)
+            for p in render_order:
+                if (p['src_row'], p['src_col']) not in self._face_revealed:
+                    continue
+
+                px = int(round(p['x']))
+                py = int(round(p['y']))
+
+                screen_row = y + py + 1
+                screen_col = x + 1 + px
+
+                if screen_row < y + 1 or screen_row >= y + h - 1:
+                    continue
+                if screen_col < x + 1 or screen_col >= x + w - 1:
+                    continue
+
+                color_hex = p['color']
+                if color_hex not in self._face_color_map and self._face_next_pair < 255:
+                    try:
+                        r = int(color_hex[0:2], 16)
+                        g = int(color_hex[2:4], 16)
+                        b = int(color_hex[4:6], 16)
+                        curses.init_color(self._face_next_pair, r*1000//255, g*1000//255, b*1000//255)
+                        curses.init_pair(self._face_next_pair, self._face_next_pair, -1)
+                        self._face_color_map[color_hex] = self._face_next_pair
+                        self._face_next_pair += 1
+                    except:
+                        self._face_color_map[color_hex] = _C["jerry_txt"]
+
+                # Shimmer
+                shimmer_val = math.sin(current_time * 2.0 + p['phase_shimmer'])
+
+                if shimmer_val > 0.95:
+                    draw_char = random.choice(shimmer_chars)
+                    attr = curses.color_pair(self._face_color_map[color_hex]) | curses.A_BOLD
+                elif shimmer_val > 0.88:
+                    draw_char = p['char']
+                    attr = curses.color_pair(self._face_color_map[color_hex]) | curses.A_BOLD
+                elif shimmer_val < -0.90:
+                    draw_char = p['char']
+                    attr = curses.color_pair(self._face_color_map[color_hex]) | curses.A_DIM
+                else:
+                    draw_char = p['char']
+                    attr = curses.color_pair(self._face_color_map[color_hex])
+
+                try:
+                    self.stdscr.addch(screen_row, screen_col, draw_char, attr)
+                except curses.error:
+                    pass
+
+            # Render culling particles (fade out animation)
+            if hasattr(self, '_face_cull_list'):
+                still_culling = []
+                for p in self._face_cull_list:
+                    if 'cull_alpha' not in p:
+                        p['cull_alpha'] = 1.0
+                    p['cull_alpha'] -= 0.03
+                    if p['cull_alpha'] <= 0:
+                        continue
+                    still_culling.append(p)
+
+                    drift_x = math.sin(current_time * p['speed'] + p['phase_x']) * p['diffusion_r'] * 0.5
+                    drift_y = math.cos(current_time * p['speed'] * 0.7 + p['phase_y']) * p['diffusion_r'] * 0.3
+                    px = int(round(p['src_col'] + drift_x + global_shift_x))
+                    py = int(round(p['src_row'] + drift_y + global_shift_y))
+
+                    screen_row = y + py + 1
+                    screen_col = x + 1 + px
+
+                    if screen_row < y + 1 or screen_row >= y + h - 1:
+                        continue
+                    if screen_col < x + 1 or screen_col >= x + w - 1:
+                        continue
+
+                    color_hex = p['color']
+                    if color_hex not in self._face_color_map and self._face_next_pair < 255:
+                        try:
+                            r = int(color_hex[0:2], 16)
+                            g = int(color_hex[2:4], 16)
+                            b = int(color_hex[4:6], 16)
+                            curses.init_color(self._face_next_pair, r*1000//255, g*1000//255, b*1000//255)
+                            curses.init_pair(self._face_next_pair, self._face_next_pair, -1)
+                            self._face_color_map[color_hex] = self._face_next_pair
+                            self._face_next_pair += 1
+                        except:
+                            self._face_color_map[color_hex] = _C["jerry_txt"]
+
+                    attr = curses.color_pair(self._face_color_map[color_hex]) | curses.A_DIM
+                    try:
+                        self.stdscr.addch(screen_row, screen_col, p['char'], attr)
+                    except curses.error:
+                        pass
+
+                self._face_cull_list = still_culling
 
             # Bottom border
             try:
@@ -947,74 +1267,78 @@ class TUI:
     def _draw_question_panel(self, y: int, W: int, question: Dict):
         """Draw question panel with scrollable options and custom answer input."""
         try:
+            q_type = question.get("type", "")
             q_text = str(question.get("question", "?"))
             options = question.get("options", [])
             selected = question.get("selected", 0)
             selected_indices = question.get("selected_indices") or set()
-            
+
             # Ensure options is a list
             if not isinstance(options, list):
                 options = []
-            
+
+            # Handle persona wizard steps specially
+
+
             # Fixed panel size - always same dimensions
             panel_h = 11  # Fixed height (includes input row)
             panel_w = min(70, W - 4)
             panel_x = (W - panel_w) // 2
             panel_y = y - panel_h  # Position directly above input bar
-            
+
             if panel_y < 1:
                 panel_y = 1
-            
+
             battr = curses.color_pair(_C["border"]) | curses.A_BOLD
             selattr = curses.color_pair(_C["tool_hdr"]) | curses.A_BOLD  # Currently highlighted
             normattr = curses.color_pair(_C["jerry_txt"])
             mutedattr = curses.color_pair(_C["muted"])
             checkattr = curses.color_pair(_C["tool_txt"]) | curses.A_BOLD  # Selected (checked)
             bgattr = curses.color_pair(_C["border"])  # Background fill
-            
+
             # Draw border
             self.stdscr.addstr(panel_y, panel_x, "╭" + "─" * (panel_w - 2) + "╮", battr)
             for i in range(1, panel_h - 1):
                 self.stdscr.addstr(panel_y + i, panel_x, "│", battr)
                 self.stdscr.addstr(panel_y + i, panel_x + panel_w - 1, "│", battr)
             self.stdscr.addstr(panel_y + panel_h - 1, panel_x, "╰" + "─" * (panel_w - 2) + "╯", battr)
-            
+
             # Fill panel background to prevent bleed-through
             for i in range(1, panel_h - 1):
                 self.stdscr.addstr(panel_y + i, panel_x + 1, " " * (panel_w - 2), bgattr)
-            
+
             # Draw question title (scroll if too long)
             title = f" ❓ {q_text}"
             if len(title) > panel_w - 4:
                 title = title[:panel_w - 7] + "..."
             self.stdscr.addstr(panel_y + 1, panel_x + 2, title[:panel_w-4], selattr | curses.A_BOLD)
-            
+
             # Options area: rows 3 to panel_h-3 (leaving room for custom option + input)
             # Row 2 = instruction, Rows 3-6 = options (4 visible), Row 7 = custom, Row 8 = input
             options_start_row = panel_y + 3
             options_end_row = panel_y + panel_h - 4  # Row before custom
             visible_rows = options_end_row - options_start_row  # 4 rows
-            
+
             # Calculate scroll offset to keep selected item visible
             scroll_offset = 0
             if selected >= visible_rows:
                 scroll_offset = selected - visible_rows + 1
-            
+
             # Draw instruction
             self.stdscr.addstr(panel_y + 2, panel_x + 2, "↑↓ scroll, Space select, Enter confirm:", normattr)
-            
+
             # Draw options with scrolling
             for visible_idx in range(visible_rows):
                 actual_idx = scroll_offset + visible_idx
                 if actual_idx >= len(options):
                     break
-                
+
                 row = options_start_row + visible_idx
-                
+
                 # Determine marker and color based on state
                 is_selected = actual_idx in selected_indices  # Checked with Space
                 is_highlighted = actual_idx == selected  # Current cursor position
-                
+
                 if is_selected and is_highlighted:
                     marker = "◉"  # Both selected and highlighted
                     attr = checkattr  # Selected color takes priority
@@ -1027,10 +1351,10 @@ class TUI:
                 else:
                     marker = "○"  # Neither
                     attr = normattr
-                
+
                 opt_text = f"  {marker} {str(options[actual_idx])[:panel_w-12]}"
                 self.stdscr.addstr(row, panel_x + 2, opt_text[:panel_w-4], attr)
-            
+
             # Draw custom answer option (always visible at bottom)
             custom_row = panel_y + panel_h - 3
             is_custom_selected = selected >= len(options)
@@ -1038,21 +1362,21 @@ class TUI:
             custom_text = f"  {custom_marker} ── Type custom answer below ──"
             custom_attr = selattr if is_custom_selected else mutedattr
             self.stdscr.addstr(custom_row, panel_x + 2, custom_text[:panel_w-4], custom_attr)
-            
+
             # Draw input buffer INSIDE panel (for custom answer)
             input_row = panel_y + panel_h - 2
             prompt = "Answer: "
-            avail = panel_w - len(prompt) - 4
+            avail = max(1, panel_w - len(prompt) - 4)
             disp = (self.input_buf[-avail:]
                     if len(self.input_buf) > avail else self.input_buf)
             self.stdscr.addstr(input_row, panel_x + 2, prompt,
                               curses.color_pair(_C["inp_pre"]) | curses.A_BOLD)
             self.stdscr.addstr(input_row, panel_x + 2 + len(prompt), disp,
                               curses.color_pair(_C["inp_txt"]))
-            
-        except Exception as e:
-            # Silently fail - don't crash UI
+
+        except curses.error:
             pass
+
 
     def _draw_todo_vertical(self, todos: List[Todo], y: int, x: int, h: int, w: int):
         """Draw todo panel vertically beside face panel.
@@ -1139,10 +1463,18 @@ class TUI:
         iw = max(4, w - 4)
         ih = h - 2  # Visible lines (minus borders)
 
+        # Get current persona name for labels
+        try:
+            from .personas import get_persona_manager
+            persona_mgr = get_persona_manager()
+            p_name = persona_mgr.get_current().name.lower()
+        except Exception:
+            p_name = "jerry"
+
         # Build list of all chat lines
         all_lines = []
         for msg in chat:
-            role_label = "you: " if msg.role == "user" else "jerry: "
+            role_label = "you: " if msg.role == "user" else f"{p_name}: "
             wrapped = textwrap.wrap(msg.text, width=iw - len(role_label)) or [""]
 
             # Only add role label to first line of each message
@@ -1177,9 +1509,10 @@ class TUI:
                         self.stdscr.addstr(y + 1 + i, x + 7, text[5:][:iw-7],
                                            curses.color_pair(cp))
                     else:
-                        self.stdscr.addstr(y + 1 + i, x + 2, "jerry: ",
+                        lbl_len = len(p_name) + 2  # "name: "
+                        self.stdscr.addstr(y + 1 + i, x + 2, f"{p_name}: ",
                                            curses.color_pair(lbl) | curses.A_BOLD)
-                        self.stdscr.addstr(y + 1 + i, x + 9, text[7:][:iw-9],
+                        self.stdscr.addstr(y + 1 + i, x + 2 + lbl_len, text[lbl_len:][:iw-lbl_len],
                                            curses.color_pair(cp))
                 else:
                     # Continuation line - just draw text
@@ -1448,9 +1781,20 @@ class TUI:
                           w: int) -> List[Tuple[int, str, int]]:
         lines: List[Tuple[int, str, int]] = []
 
+        # Get current persona name for chat labels
+        try:
+            from .personas import get_persona_manager
+            persona_mgr = get_persona_manager()
+            persona_name = persona_mgr.get_current().name.lower()
+        except Exception:
+            persona_name = "jerry"
+
         # Merge log + chat by timestamp
         events: List[Tuple[str, object]] = []
         for e in log:
+            # Skip debug logs — they go to /log view only
+            if e.kind == "debug":
+                continue
             events.append((e.ts, e))
         for m in chat:
             events.append((m.ts, m))
@@ -1504,7 +1848,7 @@ class TUI:
                 else:
                     expr = f"  {ev.expression}" if ev.expression else ""
                     lines.append((_C["jerry_lbl"],
-                                  f"jerry{expr}  ·  {ts}", curses.A_BOLD))
+                                  f"{persona_name}{expr}  ·  {ts}", curses.A_BOLD))
                     # Wrap text and add to lines - handle empty text
                     text_to_wrap = ev.text if ev.text else "(thinking...)"
                     wrapped = self._wrap(text_to_wrap, max(1, w - 4))
@@ -1627,6 +1971,9 @@ class TUI:
         # Check if question is active
         question = self.state.get_pending_question()
         if question and question.get("active"):
+            q_type = question.get("type", "")
+            q_text = question.get("question", "")
+
             # Show minimal hint during question - NO INPUT TEXT (it's in panel)
             hint = "Type answer in panel ↑"
             
@@ -1818,11 +2165,19 @@ class TUI:
             iw = max(1, w - 4)
             ih = h - 2
 
+            # Get current persona name for labels
+            try:
+                from .personas import get_persona_manager
+                persona_mgr = get_persona_manager()
+                p_name = persona_mgr.get_current().name.lower()
+            except Exception:
+                p_name = "jerry"
+
             for msg in chat:
                 if not msg.text:
                     continue
                 text = msg.text.replace('\n', ' ')
-                role_label = "you: " if msg.role == "user" else "jerry: "
+                role_label = "you: " if msg.role == "user" else f"{p_name}: "
                 wrapped = textwrap.wrap(text, width=iw - len(role_label)) or [""]
 
                 for i, chunk in enumerate(wrapped):
@@ -1852,9 +2207,10 @@ class TUI:
                         win.addstr(y + 1 + i, x + 7, text[5:][:iw-7],
                                    curses.color_pair(cp))
                     else:
-                        win.addstr(y + 1 + i, x + 2, "jerry: ",
+                        lbl_len = len(p_name) + 2  # "name: "
+                        win.addstr(y + 1 + i, x + 2, f"{p_name}: ",
                                    curses.color_pair(lbl) | curses.A_BOLD)
-                        win.addstr(y + 1 + i, x + 9, text[7:][:iw-9],
+                        win.addstr(y + 1 + i, x + 2 + lbl_len, text[lbl_len:][:iw-lbl_len],
                                    curses.color_pair(cp))
                 else:
                     win.addstr(y + 1 + i, x + 2, text[:iw-2],
@@ -2075,6 +2431,318 @@ class TUI:
         # Check if there's a pending question - handle specially
         question = self.state.get_pending_question()
         if question and question.get("active"):
+            # Handle persona-specific question types
+            q_type = question.get("type", "")
+
+            if q_type == "persona_select":
+                from .personas import get_persona_manager
+                persona_mgr = get_persona_manager()
+                persona_names = question.get("persona_names", [])
+                display_opts = question.get("options", [])
+                selected = question.get("selected", 0)
+
+                if key == curses.KEY_UP:
+                    if selected > 0:
+                        question["selected"] = selected - 1
+                    return True
+                elif key == curses.KEY_DOWN:
+                    if selected < len(display_opts) - 1:
+                        question["selected"] = selected + 1
+                    return True
+                elif key in (10, 13, curses.KEY_ENTER):
+                    if question.get("show_submenu"):
+                        sub_name = question.get("submenu_persona")
+                        action = display_opts[selected] if selected < len(display_opts) else ""
+
+                        if action.startswith("Switch"):
+                            persona_mgr.set_persona(sub_name)
+                            self.state.push_log("info", f"✓ Switched to {sub_name}")
+                            if hasattr(self, '_agent_ref') and self._agent_ref:
+                                persona = persona_mgr.get_current()
+                                self._agent_ref.set_persona_prefix(persona.prompt_prefix)
+                                self._agent_ref.set_tool_packs(persona.tool_packs)
+                        elif action.startswith("Edit"):
+                            persona = persona_mgr.get_persona(sub_name)
+                            if persona:
+                                self._start_persona_edit_wizard(persona)
+                                return True
+                        elif action.startswith("Copy"):
+                            self._start_persona_copy_wizard(sub_name)
+                            return True
+                        elif action.startswith("Delete"):
+                            success = persona_mgr.delete_custom_persona(sub_name)
+                            if success:
+                                self.state.push_log("info", f"✓ Deleted persona '{sub_name}'")
+                            else:
+                                self.state.push_log("error", f"Can't delete '{sub_name}'")
+                        elif action.startswith("Back"):
+                            question["show_submenu"] = False
+                            question["submenu_persona"] = None
+                            personas = persona_mgr.list_personas()
+                            current = persona_mgr.get_current()
+                            opts = []
+                            for p in personas:
+                                marker = "✓" if p.name == current.name else " "
+                                tag = " (custom)" if p.custom else ""
+                                opts.append(f"{marker} {p.name}{tag}")
+                            opts.append("CREATE_NEW")
+                            question["options"] = opts
+                            question["persona_names"] = [p.name for p in personas] + ["__CREATE_NEW__"]
+                            question["selected"] = 0
+                            question["question"] = "Select Persona (Enter to pick)"
+                            return True
+
+                        self.state.clear_pending_question()
+                        self.state.set_status("idle")
+                        self.input_buf = ""
+                        return True
+                    else:
+                        if selected < len(persona_names):
+                            pname = persona_names[selected]
+                            if pname == "__CREATE_NEW__":
+                                self._start_persona_create_wizard()
+                                return True
+                            else:
+                                persona = persona_mgr.get_persona(pname)
+                                if persona and persona.custom:
+                                    question["show_submenu"] = True
+                                    question["submenu_persona"] = pname
+                                    question["options"] = [
+                                        f"Switch to {pname}",
+                                        f"Edit {pname}",
+                                        f"Copy {pname}",
+                                        f"Delete {pname}",
+                                        "Back",
+                                    ]
+                                    question["persona_names"] = []
+                                    question["selected"] = 0
+                                    question["question"] = f"{pname} (custom) — choose action:"
+                                    return True
+                                elif persona:
+                                    persona_mgr.set_persona(pname)
+                                    self.state.push_log("info", f"✓ Switched to {pname}")
+                                    if hasattr(self, '_agent_ref') and self._agent_ref:
+                                        persona = persona_mgr.get_current()
+                                        self._agent_ref.set_persona_prefix(persona.prompt_prefix)
+                                        self._agent_ref.set_tool_packs(persona.tool_packs)
+                                    self.state.clear_pending_question()
+                                    self.state.set_status("idle")
+                                    self.input_buf = ""
+                                    return True
+
+                        self.state.clear_pending_question()
+                        self.state.set_status("idle")
+                        self.input_buf = ""
+                        return True
+                return True
+
+            elif q_type == "persona_create_name":
+                if key in (10, 13, curses.KEY_ENTER):
+                    name = self.input_buf.strip()
+                    if name:
+                        question["persona_name"] = name
+                        question["question"] = "Enter description:"
+                        question["type"] = "persona_create_desc"
+                        self.input_buf = ""
+                        return True
+                    self.input_buf = ""
+                    return True
+
+            elif q_type == "persona_create_desc":
+                if key in (10, 13, curses.KEY_ENTER):
+                    desc = self.input_buf.strip()
+                    if desc:
+                        question["persona_desc"] = desc
+                    from .tool_loader import list_available_packages
+                    packs = list_available_packages()
+                    if not packs:
+                        packs = ["agent"]  # Fallback
+                    question["available_packs"] = packs
+                    question["selected_packs"] = ["agent"]
+                    question["pack_sel"] = 0
+                    # Set options list so _draw_wizard_panel_v2 shows them
+                    question["options"] = list(packs)
+                    question["selected"] = 0
+                    question["selected_indices"] = set(range(len(packs)))  # All selected by default
+                    question["question"] = f"Select tool packs (Space toggle, Enter confirm)"
+                    question["type"] = "persona_create_packs"
+                    self.input_buf = ""
+                    return True
+
+            elif q_type == "persona_create_packs":
+                packs = question.get("available_packs", [])
+                options = question.get("options", [])
+                selected_packs = question.get("selected_packs", ["agent"])
+                selected = question.get("selected", 0)
+
+                if key == curses.KEY_UP:
+                    if selected > 0:
+                        question["selected"] = selected - 1
+                    return True
+                elif key == curses.KEY_DOWN:
+                    if selected < len(options) - 1:
+                        question["selected"] = selected + 1
+                    return True
+                elif key == ord(' '):
+                    if selected < len(packs):
+                        pack = packs[selected]
+                        if pack in selected_packs:
+                            selected_packs.remove(pack)
+                        else:
+                            selected_packs.append(pack)
+                        question["selected_packs"] = selected_packs
+                        # Update selected_indices to reflect Space selections
+                        question["selected_indices"] = set(i for i, p in enumerate(packs) if p in selected_packs)
+                        active = ", ".join(selected_packs) if selected_packs else "(none)"
+                        question["question"] = f"Tool packs: {active} | Space toggle, Enter confirm"
+                    return True
+                elif key in (10, 13, curses.KEY_ENTER):
+                    question["persona_packs"] = selected_packs
+                    question["question"] = "Enter prompt prefix:"
+                    question["type"] = "persona_create_prompt"
+                    question["options"] = []  # Clear options for text input step
+                    question["selected_indices"] = set()
+                    self.input_buf = ""
+                    return True
+                return True
+
+            elif q_type == "persona_create_prompt":
+                if key in (10, 13, curses.KEY_ENTER):
+                    prompt = self.input_buf.strip()
+                    if prompt:
+                        from .personas import get_persona_manager
+                        persona_mgr = get_persona_manager()
+                        packs = question.get("persona_packs", ["agent"])
+                        success = persona_mgr.create_custom_persona(
+                            question["persona_name"],
+                            question["persona_desc"],
+                            prompt,
+                            tool_packs=packs
+                        )
+                        if success:
+                            self.state.push_log("info", f"✓ Created persona '{question['persona_name']}' (packs: {', '.join(packs)})")
+                            persona_mgr.set_persona(question["persona_name"])
+                            self.state.push_log("info", f"✓ Switched to {question['persona_name']}")
+                            if hasattr(self, '_agent_ref') and self._agent_ref:
+                                persona = persona_mgr.get_current()
+                                self._agent_ref.set_persona_prefix(persona.prompt_prefix)
+                                self._agent_ref.set_tool_packs(persona.tool_packs)
+                        else:
+                            self.state.push_log("error", f"Persona '{question['persona_name']}' already exists")
+                    self.state.clear_pending_question()
+                    self.state.set_status("idle")
+                    self.input_buf = ""
+                    return True
+
+            elif q_type == "persona_edit_desc":
+                if key in (10, 13, curses.KEY_ENTER):
+                    desc = self.input_buf.strip()
+                    persona = question["edit_persona"]
+                    if desc:
+                        persona.description = desc
+                    current_packs = question.get("edit_current_packs", list(persona.tool_packs))
+                    from .tool_loader import list_available_packages
+                    packs = list_available_packages()
+                    if not packs:
+                        packs = ["agent"]
+                    # Set options list for graphical display
+                    question["options"] = list(packs)
+                    question["selected"] = 0
+                    question["selected_indices"] = set(i for i, p in enumerate(packs) if p in current_packs)
+                    active = ", ".join(current_packs) if current_packs else "(none)"
+                    question["question"] = f"Tool packs: {active} | Space toggle, Enter confirm"
+                    question["type"] = "persona_edit_packs"
+                    question["available_packs"] = packs
+                    question["selected_packs"] = list(current_packs)
+                    question["pack_sel"] = 0
+                    self.input_buf = ""
+                    return True
+
+            elif q_type == "persona_edit_packs":
+                packs = question.get("available_packs", [])
+                options = question.get("options", [])
+                selected_packs = question.get("selected_packs", ["agent"])
+                selected = question.get("selected", 0)
+
+                if key == curses.KEY_UP:
+                    if selected > 0:
+                        question["selected"] = selected - 1
+                    return True
+                elif key == curses.KEY_DOWN:
+                    if selected < len(options) - 1:
+                        question["selected"] = selected + 1
+                    return True
+                elif key == ord(' '):
+                    if selected < len(packs):
+                        pack = packs[selected]
+                        if pack in selected_packs:
+                            selected_packs.remove(pack)
+                        else:
+                            selected_packs.append(pack)
+                        question["selected_packs"] = selected_packs
+                        question["selected_indices"] = set(i for i, p in enumerate(packs) if p in selected_packs)
+                        active = ", ".join(selected_packs) if selected_packs else "(none)"
+                        question["question"] = f"Tool packs: {active} | Space toggle, Enter confirm"
+                    return True
+                elif key in (10, 13, curses.KEY_ENTER):
+                    question["persona_packs"] = selected_packs
+                    persona = question["edit_persona"]
+                    current_prompt = question.get("edit_current_prompt", persona.prompt_prefix)
+                    question["question"] = f"Prompt prefix (Enter to keep):"
+                    question["type"] = "persona_edit_prompt"
+                    question["options"] = []
+                    question["selected_indices"] = set()
+                    self.input_buf = current_prompt
+                    return True
+                return True
+
+            elif q_type == "persona_edit_prompt":
+                if key in (10, 13, curses.KEY_ENTER):
+                    prompt = self.input_buf.strip()
+                    persona = question["edit_persona"]
+                    if prompt:
+                        persona.prompt_prefix = prompt
+                    persona.tool_packs = question.get("persona_packs", question.get("edit_current_packs", ["agent"]))
+                    if not persona.description:
+                        persona.description = question.get("edit_current_desc", "")
+                    from .personas import get_persona_manager
+                    persona_mgr = get_persona_manager()
+                    filepath = os.path.join(persona_mgr.custom_dir, f"{persona.name.lower().replace(' ', '_')}.json")
+                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                    with open(filepath, 'w') as f:
+                        json.dump(persona.to_dict(), f, indent=2)
+                    self.state.push_log("info", f"✓ Updated persona '{persona.name}'")
+                    persona_mgr._load_personas()
+                    persona_mgr.set_persona(persona.name)
+                    if hasattr(self, '_agent_ref') and self._agent_ref:
+                        self._agent_ref.set_persona_prefix(persona.prompt_prefix)
+                        self._agent_ref.set_tool_packs(persona.tool_packs)
+                    self.state.clear_pending_question()
+                    self.state.set_status("idle")
+                    self.input_buf = ""
+                    return True
+
+            elif q_type == "persona_copy_name":
+                if key in (10, 13, curses.KEY_ENTER):
+                    new_name = self.input_buf.strip()
+                    src_name = question.get("copy_source", "")
+                    if new_name and src_name:
+                        from .personas import get_persona_manager
+                        persona_mgr = get_persona_manager()
+                        src = persona_mgr.get_persona(src_name)
+                        if src:
+                            persona_mgr.create_custom_persona(
+                                name=new_name,
+                                description=src.description,
+                                prompt_prefix=src.prompt_prefix,
+                                tool_packs=list(src.tool_packs)
+                            )
+                            self.state.push_log("info", f"✓ Copied '{src_name}' to '{new_name}'")
+                    self.state.clear_pending_question()
+                    self.state.set_status("idle")
+                    self.input_buf = ""
+                    return True
+
             # Allow quit/exit even during question
             if key in (17, ord('q')):  # Ctrl+Q or q
                 return False  # Signal quit
@@ -2287,6 +2955,9 @@ class TUI:
             self.state.push_log("info", "/clear            clear input buffer")
             self.state.push_log("info", "/compress         compress conversation history")
             self.state.push_log("info", "/theme [dark|light|auto]  toggle or set theme")
+            self.state.push_log("info", "/persona            select AI personality")
+            self.state.push_log("info", "/persona list       show all personas")
+            self.state.push_log("info", "/persona create     create custom persona")
             self.state.push_log("info", "/face [show|hide|toggle]  toggle face panel")
             self.state.push_log("info", "/face <name>  set face (plain, unique, result, grumpy, happy, neutral)")
             self.state.push_log("info", "/face list  show available faces")
@@ -2346,6 +3017,55 @@ class TUI:
                 self.face_enabled = not self.face_enabled
                 state_str = "enabled" if self.face_enabled else "disabled"
                 self.state.push_log("info", f"✓ Face panel {state_str}")
+
+        elif cmd == "persona":
+            # Persona selection and management
+            from .personas import get_persona_manager, BUILTIN_PERSONAS
+
+            persona_mgr = get_persona_manager()
+
+            if len(parts) > 1:
+                subcmd = parts[1].lower()
+
+                if subcmd == "list":
+                    # List all personas with tool packs
+                    self.state.push_log("info", "─── personas ─────────────────────────────────")
+                    current = persona_mgr.get_current()
+                    for i, p in enumerate(persona_mgr.list_personas(), 1):
+                        marker = "✓" if p.name == current.name else " "
+                        custom_tag = " (custom)" if p.custom else ""
+                        packs = ", ".join(p.tool_packs) if p.tool_packs else "(none)"
+                        self.state.push_log("info", f"  {marker} {i}. {p.name}{custom_tag}")
+                        self.state.push_log("info", f"     {p.description}")
+                        self.state.push_log("info", f"     Packs: {packs}")
+                    self.state.push_log("info", "──────────────────────────────────────────────")
+                    self.state.push_log("info", "Commands: /persona edit|delete|copy <name>")
+
+                elif subcmd == "create":
+                    # Show persona creation wizard UI
+                    self._show_persona_create_wizard()
+
+                elif subcmd == "current":
+                    current = persona_mgr.get_current()
+                    self.state.push_log("info", f"Current persona: {current.name}")
+                    self.state.push_log("info", f"  {current.description}")
+
+                else:
+                    # Try to switch to persona by name
+                    success = persona_mgr.set_persona(subcmd)
+                    if success:
+                        self.state.push_log("info", f"✓ Switched to {subcmd}")
+                        # Update agent with new persona prefix and tool packs
+                        if hasattr(self, '_agent_ref') and self._agent_ref:
+                            persona = persona_mgr.get_current()
+                            self._agent_ref.set_persona_prefix(persona.prompt_prefix)
+                            self._agent_ref.set_tool_packs(persona.tool_packs)
+                    else:
+                        self.state.push_log("error", f"Unknown persona: {subcmd}")
+                        self.state.push_log("info", "Use /persona list to see available personas")
+            else:
+                # Show persona selection menu UI (like ask_user)
+                self._show_persona_menu_ui()
 
         elif cmd == "praise":
             # User praising Jerry: /praise [reason]

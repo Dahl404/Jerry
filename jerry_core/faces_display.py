@@ -132,7 +132,7 @@ class FaceDisplay:
 
     def get_colored_face(self, term_width: int = 100, term_height: int = 50) -> tuple:
         """Get current colored face scaled to terminal size.
-        
+
         Returns:
             Tuple of (lines, color_grid) where lines is list of strings
             and color_grid is 2D array of hex color codes
@@ -140,23 +140,23 @@ class FaceDisplay:
         face_data = self.colored_faces.get(self.current_face)
         if not face_data:
             return [], []
-        
+
         face_lines = face_data.get('lines', [])
         color_grid = face_data.get('colors', [])
-        
+
         if not face_lines:
             return [], []
-        
+
         # Get actual face dimensions
         orig_h = len(face_lines)
         orig_w = len(face_lines[0]) if face_lines else 0
         if orig_w == 0 or orig_h == 0:
             return face_lines, color_grid
-        
+
         # Calculate scale
         margin = 2
         scale = (term_width - margin * 2) / orig_w if orig_w > 0 else 1
-        
+
         # Scale face dimensions
         scaled_h = max(1, int(orig_h * scale))
         scaled_w = max(1, int(orig_w * scale))

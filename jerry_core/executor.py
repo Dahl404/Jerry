@@ -33,8 +33,37 @@ class Executor:
         self.state  = state
         self.worker = worker
         self.cwd    = JERRY_BASE  # Current working directory
+        self._dynamic_tools = {}  # Loaded dynamic tool implementations
+        self._load_dynamic_tools()
         # Keep state in sync from the start
         state.set_cwd(self.cwd)
+
+    def _load_dynamic_tools(self):
+        """Load dynamic tool implementations from .py files."""
+        from .config import JERRY_BASE
+        self._dynamic_tools = {}
+        tools_root = os.path.join(JERRY_BASE, "tools")
+        if not os.path.isdir(tools_root):
+            return
+
+        for pack in os.listdir(tools_root):
+            pack_dir = os.path.join(tools_root, pack)
+            if not os.path.isdir(pack_dir):
+                continue
+            for fname in os.listdir(pack_dir):
+                if fname.endswith('.py'):
+                    tool_name = fname[:-3]
+                    fpath = os.path.join(pack_dir, fname)
+                    try:
+                        # Load the module
+                        import importlib.util
+                        spec = importlib.util.spec_from_file_location(f"dynamic_{pack}_{tool_name}", fpath)
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        if hasattr(module, 'execute'):
+                            self._dynamic_tools[tool_name] = module.execute
+                    except Exception as e:
+                        self.state.push_log("error", f"Failed to load dynamic tool {tool_name}: {e}")
 
     def _resolve_path(self, path: str) -> str:
         """Resolve a path relative to current working directory."""
@@ -72,6 +101,14 @@ class Executor:
 
     # ── Dispatcher ─────────────────────────────────────────────────────────────
     def _dispatch(self, name: str, a: Dict) -> str:
+        # Check dynamic tools first
+        if name in self._dynamic_tools:
+            try:
+                result = self._dynamic_tools[name](**a)
+                return str(result) if result is not None else ""
+            except Exception as e:
+                return f"ERROR executing {name}: {e}"
+
         if   name == "help":                 return self._help(a.get("tool_name"))
         elif name == "execute_command":      return self._sh(a["command"], a.get("workdir"))
         elif name == "write_file":           return self._write(a["path"], a["content"])
@@ -121,6 +158,16 @@ class Executor:
         elif name == "load_multiple_files":  return self._load_multiple_files(a.get("files", []))
         # Worker program creation
         elif name == "worker_write_program": return self._worker_write_program(a.get("path"), a.get("spec"), a.get("language", "python"))
+        # Role/persona management tools
+        elif name == "switch_role":          return self._switch_role(a["role_name"])
+        elif name == "create_role":          return self._create_role(a["name"], a["description"], a["prompt_prefix"], a.get("tool_packs", ["agent"]))
+        elif name == "list_roles":           return self._list_roles()
+        # Tool management tools
+        elif name == "create_tool":          return self._create_tool(a["tool_name"], a["pack_name"], a["tool_description"], a["implementation"], a.get("parameters"), a.get("required"))
+        elif name == "edit_tool":            return self._edit_tool(a["tool_name"], a["pack_name"], a.get("description"), a.get("parameters"), a.get("required"), a.get("implementation"))
+        elif name == "delete_tool":          return self._delete_tool(a["tool_name"], a["pack_name"])
+        elif name == "read_tool":            return self._read_tool(a["tool_name"], a["pack_name"])
+        elif name == "list_tools":           return self._list_tools(a.get("pack_name"))
         # NOTE: 'praise' is USER-ONLY via /praise command, not a tool Jerry can call
         else:
             return f"Unknown tool: {name}"
@@ -153,14 +200,17 @@ class Executor:
 
     # ── Enter directory ────────────────────────────────────────────────────────
     def _enter(self, path: str) -> str:
-        """Change current working directory."""
+        """Change current working directory. Paths must be RELATIVE."""
         try:
-            # Resolve the path
+            # Reject absolute paths — all navigation must be relative
             if os.path.isabs(path):
-                new_cwd = os.path.abspath(path)
-            else:
-                new_cwd = os.path.abspath(os.path.join(self.cwd, path))
-            
+                rel = os.path.relpath(path, self.cwd)
+                if rel.startswith('..'):
+                    return f"ERROR: Use relative paths only. Current: {self._pwd_rel()}"
+                path = rel
+
+            new_cwd = os.path.abspath(os.path.join(self.cwd, path))
+
             # Validate it exists and is a directory
             if not os.path.exists(new_cwd):
                 return f"ERROR: Directory not found: {path}"
@@ -181,8 +231,16 @@ class Executor:
 
     # ── Print working directory ────────────────────────────────────────────────
     def _pwd(self) -> str:
-        """Return current working directory."""
-        return f"Current directory: {self.cwd}"
+        """Return current working directory (relative to workspace root)."""
+        rel = self._pwd_rel()
+        return f"Current directory: {rel}"
+
+    def _pwd_rel(self) -> str:
+        """Return relative path from workspace root."""
+        try:
+            return os.path.relpath(self.cwd, JERRY_BASE)
+        except ValueError:
+            return "."
 
     # ── Help tool ──────────────────────────────────────────────────────────────
     def _help(self, tool_name: Optional[str] = None) -> str:
@@ -907,3 +965,222 @@ Write the complete file content. DO NOT explain or describe - just write the cod
         except Exception as e:
             self.state.push_chat("dao", f"✗ Worker failed to write `{path}`: {e}", expression="bummed")
             return f"ERROR: {e}"
+
+    # ── Role/persona management tools ──────────────────────────────────────────
+    def _switch_role(self, role_name: str) -> str:
+        """Switch to a different persona/role."""
+        from .personas import get_persona_manager
+        persona_mgr = get_persona_manager()
+        success = persona_mgr.set_persona(role_name)
+        if success:
+            persona = persona_mgr.get_current()
+            # Update agent via state
+            agent = getattr(self.state, '_agent_ref', None)
+            if agent:
+                agent.set_persona_prefix(persona.prompt_prefix)
+                agent.set_tool_packs(persona.tool_packs)
+            return f"✓ Switched to role: {role_name}"
+        return f"ERROR: Role '{role_name}' not found. Use list_roles() to see available roles."
+
+    def _create_role(self, name: str, description: str, prompt_prefix: str, tool_packs: list = None) -> str:
+        """Create a new persona/role."""
+        from .personas import get_persona_manager
+        persona_mgr = get_persona_manager()
+        if tool_packs is None:
+            tool_packs = ["agent"]
+        success = persona_mgr.create_custom_persona(name, description, prompt_prefix, tool_packs)
+        if success:
+            return f"✓ Created role: {name} (packs: {', '.join(tool_packs)})"
+        return f"ERROR: Role '{name}' already exists."
+
+    def _create_tool_pack(self, pack_name: str, tools: list) -> str:
+        """Create a new tool package."""
+        from .config import JERRY_BASE
+        pack_dir = os.path.join(JERRY_BASE, "tools", pack_name)
+        os.makedirs(pack_dir, exist_ok=True)
+
+        created = []
+        for tool_def in tools:
+            tool_name = tool_def.get("name", "")
+            if not tool_name:
+                continue
+            filepath = os.path.join(pack_dir, f"{tool_name}.tool")
+            with open(filepath, 'w') as f:
+                json.dump(tool_def, f, indent=2)
+            created.append(tool_name)
+
+        if created:
+            return f"✓ Created tool pack '{pack_name}' with {len(created)} tools: {', '.join(created)}"
+        return "ERROR: No valid tools provided."
+
+    def _list_roles(self) -> str:
+        """List all available personas/roles."""
+        from .personas import get_persona_manager
+        persona_mgr = get_persona_manager()
+        personas = persona_mgr.list_personas()
+        current = persona_mgr.get_current()
+
+        lines = ["Available roles:"]
+        for p in personas:
+            marker = "✓" if p.name == current.name else " "
+            tag = " (custom)" if p.custom else ""
+            packs = ", ".join(p.tool_packs) if p.tool_packs else "(none)"
+            lines.append(f"  {marker} {p.name}{tag} — {p.description}")
+            lines.append(f"     Packs: {packs}")
+        return "\n".join(lines)
+
+    # ── Tool management tools ──────────────────────────────────────────────────
+    def _create_tool(self, tool_name: str, pack_name: str, description: str, implementation: str, parameters: dict = None, required: list = None) -> str:
+        """Create or update a tool with implementation."""
+        from .config import JERRY_BASE
+        pack_dir = os.path.join(JERRY_BASE, "tools", pack_name)
+        os.makedirs(pack_dir, exist_ok=True)
+
+        # Save tool definition
+        tool_def = {
+            "name": tool_name,
+            "description": description,
+            "parameters": parameters or {},
+            "required": required or []
+        }
+        with open(os.path.join(pack_dir, f"{tool_name}.tool"), 'w') as f:
+            json.dump(tool_def, f, indent=2)
+
+        # Save implementation
+        with open(os.path.join(pack_dir, f"{tool_name}.py"), 'w') as f:
+            f.write(implementation)
+
+        # Reload dynamic tools
+        self._load_dynamic_tools()
+
+        # Reload agent tools
+        agent = getattr(self.state, '_agent_ref', None)
+        if agent:
+            agent._load_tools_and_prompt()
+
+        return f"✓ Created tool '{tool_name}' in pack '{pack_name}'"
+
+    def _edit_tool(self, tool_name: str, pack_name: str, description: str = None, parameters: dict = None, required: list = None, implementation: str = None) -> str:
+        """Edit an existing tool's definition or implementation."""
+        from .config import JERRY_BASE
+        pack_dir = os.path.join(JERRY_BASE, "tools", pack_name)
+        tool_path = os.path.join(pack_dir, f"{tool_name}.tool")
+        impl_path = os.path.join(pack_dir, f"{tool_name}.py")
+
+        if not os.path.exists(tool_path):
+            return f"ERROR: Tool '{tool_name}' not found in pack '{pack_name}'"
+
+        # Update definition
+        with open(tool_path, 'r') as f:
+            tool_def = json.load(f)
+        if description is not None:
+            tool_def["description"] = description
+        if parameters is not None:
+            tool_def["parameters"] = parameters
+        if required is not None:
+            tool_def["required"] = required
+        with open(tool_path, 'w') as f:
+            json.dump(tool_def, f, indent=2)
+
+        # Update implementation if provided
+        if implementation is not None:
+            with open(impl_path, 'w') as f:
+                f.write(implementation)
+
+        # Reload
+        self._load_dynamic_tools()
+        agent = getattr(self.state, '_agent_ref', None)
+        if agent:
+            agent._load_tools_and_prompt()
+
+        return f"✓ Updated tool '{tool_name}' in pack '{pack_name}'"
+
+    def _delete_tool(self, tool_name: str, pack_name: str) -> str:
+        """Delete a tool from a tool pack."""
+        from .config import JERRY_BASE
+        pack_dir = os.path.join(JERRY_BASE, "tools", pack_name)
+        tool_path = os.path.join(pack_dir, f"{tool_name}.tool")
+        impl_path = os.path.join(pack_dir, f"{tool_name}.py")
+
+        if not os.path.exists(tool_path):
+            return f"ERROR: Tool '{tool_name}' not found in pack '{pack_name}'"
+
+        if os.path.exists(tool_path):
+            os.remove(tool_path)
+        if os.path.exists(impl_path):
+            os.remove(impl_path)
+
+        # Reload
+        self._load_dynamic_tools()
+        agent = getattr(self.state, '_agent_ref', None)
+        if agent:
+            agent._load_tools_and_prompt()
+
+        return f"✓ Deleted tool '{tool_name}' from pack '{pack_name}'"
+
+    def _read_tool(self, tool_name: str, pack_name: str) -> str:
+        """Read a tool's definition and implementation."""
+        from .config import JERRY_BASE
+        pack_dir = os.path.join(JERRY_BASE, "tools", pack_name)
+        tool_path = os.path.join(pack_dir, f"{tool_name}.tool")
+        impl_path = os.path.join(pack_dir, f"{tool_name}.py")
+
+        if not os.path.exists(tool_path):
+            return f"ERROR: Tool '{tool_name}' not found in pack '{pack_name}'"
+
+        lines = [f"Tool: {tool_name} (pack: {pack_name})"]
+
+        with open(tool_path, 'r') as f:
+            tool_def = json.load(f)
+        lines.append(f"Description: {tool_def.get('description', 'N/A')}")
+        lines.append(f"Parameters: {json.dumps(tool_def.get('parameters', {}), indent=2)}")
+        lines.append(f"Required: {tool_def.get('required', [])}")
+
+        if os.path.exists(impl_path):
+            with open(impl_path, 'r') as f:
+                impl = f.read()
+            lines.append(f"\nImplementation:\n{impl}")
+        else:
+            lines.append("\nNo implementation file found")
+
+        return "\n".join(lines)
+
+    def _list_tools(self, pack_name: str = None) -> str:
+        """List all tools in a pack, or all packs."""
+        from .config import JERRY_BASE
+        tools_root = os.path.join(JERRY_BASE, "tools")
+
+        if not os.path.isdir(tools_root):
+            return "No tool packs found."
+
+        if pack_name:
+            # List specific pack
+            pack_dir = os.path.join(tools_root, pack_name)
+            if not os.path.isdir(pack_dir):
+                return f"ERROR: Pack '{pack_name}' not found."
+
+            lines = [f"Tools in pack '{pack_name}':"]
+            for fname in sorted(os.listdir(pack_dir)):
+                if fname.endswith('.tool'):
+                    fpath = os.path.join(pack_dir, fname)
+                    try:
+                        with open(fpath, 'r') as f:
+                            tool = json.load(f)
+                        desc = tool.get('description', 'No description')
+                        params = tool.get('parameters', {})
+                        req = tool.get('required', [])
+                        param_str = ", ".join(f"{k}{'*' if k in req else ''}" for k in params)
+                        has_impl = "✓" if os.path.exists(fpath.replace('.tool', '.py')) else "✗"
+                        lines.append(f"  {has_impl} {tool['name']}({param_str}) — {desc}")
+                    except Exception:
+                        lines.append(f"  • {fname} (error reading)")
+            return "\n".join(lines)
+        else:
+            # List all packs
+            lines = ["Available tool packs:"]
+            for pack in sorted(os.listdir(tools_root)):
+                pack_dir = os.path.join(tools_root, pack)
+                if os.path.isdir(pack_dir):
+                    tools = [f.replace('.tool', '') for f in os.listdir(pack_dir) if f.endswith('.tool')]
+                    lines.append(f"  📦 {pack} ({len(tools)} tools): {', '.join(tools)}")
+            return "\n".join(lines)
