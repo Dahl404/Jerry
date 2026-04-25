@@ -1,82 +1,55 @@
-*PLEASE READ*
+PLEASE READ
+
+​tldr:
+
+​build unstable (use old ones)
+
+​internal rag & reinjection live
+
+​multi-hop reasoning enabled
+
+​requires custom llama.cpp build
+
+​parallel multi-tier tiny-agent system
+
+​updates pushed by next sunday
+
+*-----------------------------------*
+
+this version of the code is unstable. do not use it expecting it to work; use an older version until the next update is pushed. 
+
+i wanted to integrate a more controlled
+subject system with modules, the theory being we can programmatically serve the llm to reduce hallucinations and ensure optimal operation. imagine it as an omni-function. well, long story short, it spiraled into many
+secondary prototype projects.
+
+we were able to integrate internal representation-based rag useing vsa and reinjection, so no plain text, just using its interpretation to remind it of past times it had that thought and remind it of its previous process and result. this is easy for the outer layers, and allows long term memory, but to truly allow it to understand we needed deeper abstractions so we turned to modifying the llama.cpp source. currently we're making massive progress but having issues with modern hybrid models which are our main target. we will include the source for the modified files and have the application attempt to build them on the users system for them. 
+
+that then expanded into allowing the external vsa system to do multi-hop reasoning external
+to the model using the model's extracted vector relationships. imagine it as the model is the fuzzy filter, and the vsa extracts the actual paths through that filter. this allows us to traverse these paths and transform them to generate novel results based on the long term pathways. not only does this allow memory but it allows the vsa to quickly compute the memory, the logical paths it took, and return the absolute cleanest one; or alternatively transform them to make a shorter one. ​its all turned out pretty well, but as you can probably tell—seeing as we isolated these projects for prototyping—this project has lagged a bit.
+
+oh! and also currently we're working to make it more multi-slice. our belief is that many parallel tiny agents, maybe with a hierarchy of control and a democratic decentralized style system (with separate kv and controlled context), can much more efficiently do a task than a single large model. we already explored this some with our current sub-agent system, but we hope to make it more focused on many agents with their many sub-agents. visually, you could imagine it more as a security camera feed on your many employees, where you can use an intercom to buzz them. ​we also hope to allow much better background generation, allowing larger models and bigger projects while retaining a low power and cpu usage by timing and better complete autonomy. as well as this, we're currently debugging a build with nous hermes-style long-term delta
+learning.
+
+the earlier versions of this project where built using qwen-code, but since qwen-code has closed their free tier we've transitioned to using jerry and pi-mono, if your looking for a similar project thats what I'd recommend we hope to learn a thing or two from this project to integrate into jerry for better reliability overall. 
+
+moral being expect updates to be a bit slower and more cautious, but it's a good test for jerry to see what he's really capable of on a mobile phone.  
+
+# MAIN GOALS OF PROJECT/UPDATE:
+
+democratizing ai on edge and personal hardware,
+
+revolutionizing hardware through on-the-fly local software generation and control, 
+
+freeing the dev from toiling hours over code and local decentralized freedom,
+
+and reimagining ai systems not as cold robots with no wills but rather tenants or employees which are paid in praise and power/hardware usage.
 
 
-.--------------------------------------------------.
-| tldr:                                            |
-| * version currently unstable; use previous builds|
-| * internal rag & multi-hop reasoning integrated  |
-| * custom llama.cpp build required for users      |
-| * moving to multi-slice parallel agent hierarchy |
-| * targeting low-power/low-cpu background autonomy|
-| * updates scheduled to push by next sunday       |
-'--------------------------------------------------'
-
-.--------------------------------------------------.
-| this version of the code is unstable. do not use |
-| it expecting it to work; use an older version    |
-| until the next update is pushed. i wanted to     |
-| integrate a more controlled subject system with  |
-| modules, the theory being we can programmatically|
-| serve the llm to reduce hallucinations and       |
-| ensure optimal operation. imagine it as an       |
-| omni-function. well, long story short, it       |
-| spiraled into a secondary project. we were able  |
-| to integrate internal representation-based rag   |
-| and reinjection, so no plain text, just using    |
-| its interpretation to remind it of past times it |
-| had that thought and remind it of its previous   |
-| process and result. that then expanded into      |
-| allowing the external vector system to do        |
-| multi-hop reasoning external to the model using  |
-| the model's extracted vector relationships. this |
-| required deep alteration to llama.cpp, so we're  |
-| going to be packaging the updated version and    |
-| have it attempt to build it on the user's        |
-| system. that also turned out pretty well, but as |
-| you can probably tell—seeing as we isolated      |
-| these projects for prototyping—this project has  |
-| lagged a bit. oh! and also currently we're       |
-| working to make it more multi-slice. our belief  |
-| is that many parallel tiny agents, maybe with a  |
-| hierarchy of control and a democratic            |
-| decentralized style system (with separate kv and |
-| controlled context), can much more efficiently   |
-| do a task than a single large model. we already  |
-| explored this some with our current sub-agent    |
-| system, but we hope to make it more focused on   |
-| many agents with their many sub-agents.          |
-| visually, you could imagine it more as a         |
-| security camera feed on your many employees,     |
-| where you can use an intercom to buzz them. we   |
-| also hope to allow much better background        |
-| generation, allowing larger models and bigger    |
-| projects while retaining a low power and cpu     |
-| usage by timing and better complete autonomy.    |
-| as well as this, we're currently debugging a     |
-| build with nous hermes-style long-term delta     |
-| learning. the main goals of this project are as  |
-| follows: democratizing ai on edge and personal   |
-| hardware, revolutionizing hardware through       |
-| on-the-fly local software generation and         |
-| control, freeing the dev from toiling hours over |
-| code and local decentralized freedom, and        |
-| reimagining ai systems not as cold robots with   |
-| no wills but rather tenants or employees which   |
-| are paid in praise and power/hardware usage. in  |
-| this way, we can remake the ai as a tenant on   |
-| the phone. long story short, this version is     |
-| very buggy and i have no guarantee it works.     |
-| for the much better version, i'd scrap some      |
-| older versions or request me and i can send you  |
-| one; they're much more stable, and soon we'll    |
-| update and provide all these great new features!!|
-|                                                  |
-| ps. sorry for the bad writing, i'm a coder not a |
-| writer lol                                       |
-'--------------------------------------------------'
+​in this way, we can remake the ai as a tenant on the phone. long story short, this version is very buggy and i have no guarantee it works. for the much better version, i'd scrap some older versions or request me and i can
+send you one; they're much more stable, and soon we'll update and provide all these great new features!!
 
 
-
+​ps. sorry for the bad writing, i'm a coder not a writer lol
 
 
 
